@@ -1,0 +1,15 @@
+[package]
+name = "testing-rom"
+version = "0.1.0"
+authors = ["Mikael Silvén <mikael@silven.nu>"]
+edition = "2018"
+
+[dependencies]
+rand = "0.6.5"
+romio = "0.3.0-alpha.8"
+crossbeam-channel = "0.3"
+
+[dependencies.futures]
+version = "0.3.0-alpha.16"
+package = "futures-preview"
+features = ["async-await", "nightly"]
