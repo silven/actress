@@ -16,7 +16,8 @@ use futures::task::{Spawn};
 use futures::stream::Stream;
 
 use tokio_threadpool::{ThreadPool, Sender};
-use tokio_sync::mpsc;
+use tokio_sync::{oneshot, mpsc};
+
 
 use std::task::{Context};
 use std::pin::Pin;
@@ -24,12 +25,21 @@ use std::time::Duration;
 
 use std::marker::PhantomData;
 
-
-trait Handle<M> {
-    fn accept(&mut self, msg: M, cx: &mut InnerContext);
+trait Message: 'static {
+    type Result;
 }
 
-trait Actor: Send + 'static { }
+trait Handle<M: Message> {
+    fn accept(&mut self, msg: M, cx: &mut InnerContext) -> M::Result;
+}
+
+trait Actor: Send + 'static {
+    fn starting(&mut self) {}
+    fn started(&mut self) {}
+
+    fn stopping(&mut self) {}
+    fn stopped(&mut self) {}
+}
 
 trait EnvelopeProxy {
     type Actor: Actor;
@@ -41,26 +51,44 @@ struct Envelope<A: Actor + 'static>(Box<EnvelopeProxy<Actor = A>>);
 
 unsafe impl<A> Send for Envelope<A> where A: Actor{}
 
-struct EnvelopeInner<A, M> {
+struct EnvelopeInner<A, M> where M: Message, A: Actor + Handle<M> {
     act: PhantomData<*const A>,
     msg: Option<M>,
+    reply: Option<oneshot::Sender<M::Result>>,
 }
 
-impl<A, M> EnvelopeProxy for EnvelopeInner<A, M> where A: Actor + Handle<M>, M: 'static  {
+impl<A, M> EnvelopeProxy for EnvelopeInner<A, M> where A: Actor + Handle<M>, M: Message {
     type Actor = A;
 
-    fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext) {
+    fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext)  {
         if let Some(msg) = self.msg.take() {
-            <Self::Actor as Handle<M>>::accept(actor, msg, cx);
+            let x = <Self::Actor as Handle<M>>::accept(actor, msg, cx);
+            // TODO; Reply here
+            if let Some(tx) = self.reply.take() {
+                tx.send(x);
+            }
+        } else {
+            panic!("No message?");
         }
     }
 }
 
 impl<A> Envelope<A> where A: Actor {
-    fn new<M>(msg: M) -> Self where A: Handle<M>, M: 'static {
+    fn new<M>(msg: M) -> Self where A: Handle<M>, M: Message {
         Envelope(Box::new(EnvelopeInner {
             act: PhantomData,
             msg: Some(msg),
+            reply: None,
+        }))
+    }
+
+    fn with_reply<M>(msg: M, reply_to: oneshot::Sender<M::Result>) -> Self
+        where A: Handle<M>, M: Message
+    {
+        Envelope(Box::new(EnvelopeInner {
+            act: PhantomData,
+            msg: Some(msg),
+            reply: Some(reply_to),
         }))
     }
 }
@@ -81,6 +109,18 @@ struct Mailbox<A> where A: Actor {
 
 unsafe impl<A> Send for Mailbox<A> where A: Actor {}
 
+
+#[derive(Debug)]
+enum MailboxSendError {
+    CouldNotSend,
+}
+
+#[derive(Debug)]
+enum MailboxAskError {
+    CouldNotSend,
+    CouldNotRecv,
+}
+
 impl<A> Mailbox<A> where A: Actor {
     fn new(inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
     //fn new(inbox: cb_channel::Sender<Envelope<A>>) -> Self {
@@ -94,10 +134,27 @@ impl<A> Mailbox<A> where A: Actor {
         Mailbox::new(self.tx.clone())
     }
 
-    fn send<M>(&self, msg: M) where A: Actor + Handle<M>, M: 'static {
+    fn send<M>(&self, msg: M) -> Result<(), MailboxSendError> where A: Actor + Handle<M>, M: Message {
         let env = Envelope::new(msg);
         let mut tx = self.tx.clone();
-        tx.try_send(env);
+        match tx.try_send(env) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(MailboxSendError::CouldNotSend),
+        }
+    }
+
+    fn ask<M>(&self, msg: M) -> Result<M::Result, MailboxAskError> where A: Actor + Handle<M>, M: Message {
+        let (tx, rx) = oneshot::channel();
+        let env = Envelope::with_reply(msg, tx);
+        let mut tx = self.tx.clone();
+
+        return match tx.try_send(env) {
+            Ok(()) => match rx.wait() {  // TODO Can we do without the wait() call?
+                Ok(response) => Ok(response),
+                Err(_) => Err(MailboxAskError::CouldNotRecv),
+            }
+            Err(_) => Err(MailboxAskError::CouldNotSend),
+        }
     }
 }
 
@@ -117,21 +174,31 @@ impl Dummy {
 
 impl Actor for Dummy { }
 
+impl Message for String {
+    type Result = String;
+}
+
 impl Handle<String> for Dummy {
-    fn accept(&mut self, msg: String, cx: &mut InnerContext) {
+    fn accept(&mut self, msg: String, cx: &mut InnerContext) -> String {
         self.str_count += 1;
         println!("I got a string message, {}, {}/{}", msg, self.str_count, self.int_count);
+        return msg;
     }
 }
 
+impl Message for usize {
+    type Result = usize;
+}
+
 impl Handle<usize> for Dummy {
-    fn accept(&mut self, msg: usize, cx: &mut InnerContext) {
+    fn accept(&mut self, msg: usize, cx: &mut InnerContext) -> usize {
         self.int_count += 1;
         println!("I got a numerical message, {} {}/{}", msg, self.str_count, self.int_count);
         if self.int_count > 10 {
             println!("I am stopping now..");
             cx.state = ActorState::Stopping;
         }
+        return msg;
     }
 }
 
@@ -168,7 +235,7 @@ impl<A> ActorContext for ActorBundle<A> where A: Actor {
         loop { // TODO: this loop shouldnt have to be here.
             match self.recv.poll() {
                 Ok(Async::Ready(Some(mut msg))) => {
-                    msg.accept(&mut self.actor, &mut self.inner);
+                    let _ = msg.accept(&mut self.actor, &mut self.inner);
                     if self.inner.state == ActorState::Stopping {
                         // Is this how we stop?
                         self.recv.close();
@@ -271,7 +338,10 @@ fn main() {
         std::thread::sleep(Duration::from_secs(1));
         for _x in 0..100 {
             std::thread::sleep(Duration::from_millis(100));
-            act.send(13000);
+            match act.ask(13000) {
+                Ok(r) => println!("Got an {}", r),
+                Err(e) => println!("No reply {:?}", e),
+            }
         }
         Ok(())
     }));
