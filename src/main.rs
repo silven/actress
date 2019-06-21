@@ -1,11 +1,11 @@
-#![feature(async_await)]
+#![feature(async_await, arbitrary_self_types, weak_counts)]
 
 #![allow(unused_imports)]
 
 use std::io;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::rc::{Rc};
 
 use futures::{Poll, Async};
 
@@ -24,6 +24,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use std::marker::PhantomData;
+use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 trait Message: 'static {
     type Result;
@@ -182,6 +184,19 @@ impl Handle<String> for Dummy {
     fn accept(&mut self, msg: String, cx: &mut InnerContext) -> String {
         self.str_count += 1;
         println!("I got a string message, {}, {}/{}", msg, self.str_count, self.int_count);
+
+        if msg == "mer" {
+            match cx.spawn_actor(Dummy::new()) {
+                Some(mailbox) => {
+                    mailbox.send("hejsan!".to_owned());
+                    println!("Spawned something!");
+                },
+                None => {
+                    println!("I could not spawn!");
+                },
+            }
+        }
+
         return msg;
     }
 }
@@ -204,7 +219,7 @@ impl Handle<usize> for Dummy {
 
 struct System {
     started: bool,
-    threadpool: ThreadPool,
+    context: Arc<SystemContext>,
     actors: Vec<Box<dyn ActorContext>>,
     registry: HashMap<String, Box<dyn Any>>,
 }
@@ -226,8 +241,54 @@ struct ActorBundle<A: Actor> {
     inner: InnerContext,
 }
 
+
+struct SystemContext {
+    threadpool: ThreadPool,
+}
+
+impl SystemContext {
+    fn new() -> Self {
+        SystemContext {
+            threadpool: ThreadPool::new(),
+        }
+    }
+
+    fn spawn_future<F: Future<Item=(), Error=()> + Send + 'static>(&self, fut: F) {
+        self.threadpool.spawn(fut);
+    }
+
+    fn spawn_actor<'s, 'a, A: 'a>(self: &Arc<SystemContext>, actor: A) -> Mailbox<A> where A: Actor {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let bundle: Box<dyn ActorContext> = Box::new(ActorBundle {
+            actor: actor,
+            recv: rx,
+            inner: InnerContext {
+                state: ActorState::Started,
+                system: Arc::downgrade(self),
+            },
+        });
+
+        self.spawn_future(bundle);
+
+        Mailbox::<A>::new(tx)
+    }
+}
+
 struct InnerContext {
     state: ActorState,
+    system: Weak<SystemContext>,
+}
+
+impl InnerContext {
+    fn spawn_actor<A>(&mut self, actor: A) -> Option<Mailbox<A>> where A: Actor {
+        println!("Stuff: {:?}/{:?}", self.system.strong_count(), self.system.weak_count());
+        if let Some(system) = self.system.upgrade() {
+            Some(system.spawn_actor(actor))
+        } else {
+            None
+        }
+    }
 }
 
 impl<A> ActorContext for ActorBundle<A> where A: Actor {
@@ -263,23 +324,25 @@ impl System {
     fn new() -> Self {
         System {
             started: false,
-            threadpool: ThreadPool::new(),
+            context: Arc::new(SystemContext::new()),
             actors: Vec::new(),
             registry: HashMap::new(),
         }
     }
 
     fn start<'s, 'a, A: 'a>(&'s mut self, actor: A) -> Mailbox<A> where A: Actor {
-        //let (tx, rx) = cb_channel::unbounded();
         let (tx, rx) = mpsc::unbounded_channel();
         let bundle: Box<dyn ActorContext> = Box::new(ActorBundle {
             actor: actor,
             recv: rx,
-            inner: InnerContext{ state: ActorState::Started },
+            inner: InnerContext{
+                state: ActorState::Started,
+                system: Arc::downgrade(&self.context),
+            },
         });
 
         if self.started {
-            self.threadpool.spawn(bundle);
+            self.context.spawn_future(bundle);
         } else {
             self.actors.push(bundle);
         }
@@ -301,20 +364,24 @@ impl System {
     }
 
     fn run_until_completion(mut self) {
-        let c = self.threadpool.sender().clone();
-
         for actor in self.actors.drain(..) {
             println!("Spawning an actor, lol");
-            self.threadpool.spawn(actor);
+            self.context.spawn_future(actor);
         }
 
         println!("Waiting for system do stop...");
-        self.threadpool.shutdown().wait().unwrap();
+        //std::thread::sleep(Duration::from_secs(5));
+        // TODO: Put this in a loop and spin until unique?
+        if let Ok(context) = Arc::try_unwrap(self.context) {
+            context.threadpool.shutdown().wait().unwrap();
+        } else {
+            panic!("What the hell?");
+        }
         println!("Done with system?");
     }
 
-    fn spawn<F: Future<Item=(), Error=()> + Send + 'static>(&self, fut: F) {
-        self.threadpool.spawn(fut);
+    fn spawn_future<F: Future<Item=(), Error=()> + Send + 'static>(&self, fut: F) {
+        self.context.spawn_future(fut);
     }
 }
 
@@ -334,15 +401,21 @@ fn main() {
         }
     }
 
-    sys.spawn(lazy(move || {
+    sys.spawn_future(lazy(move || {
         std::thread::sleep(Duration::from_secs(1));
-        for _x in 0..100 {
+        for _x in 0..8 {
             std::thread::sleep(Duration::from_millis(100));
             match act.ask(13000) {
                 Ok(r) => println!("Got an {}", r),
                 Err(e) => println!("No reply {:?}", e),
             }
         }
+
+        match act.send("mer".to_owned()) {
+            Ok(_) => (),
+            Err(e) => println!("Could not send final msg"),
+        }
+
         Ok(())
     }));
 
