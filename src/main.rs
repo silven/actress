@@ -5,50 +5,36 @@
 use std::io;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::rc::{Rc, Weak};
 
-use std::marker::Unpin;
+use futures::{Poll, Async};
 
-use futures::future::{Future, FutureObj};
+use futures::future::Future;
 use futures::future::lazy;
-use futures::StreamExt;
-use futures::channel::mpsc;
-use futures::executor::{self, ThreadPool};
-use futures::io::AsyncWriteExt;
-use futures::task::{Spawn, SpawnExt};
+use futures::executor;
+use futures::task::{Spawn};
 use futures::stream::Stream;
 
+use tokio_threadpool::{ThreadPool, Sender};
+use tokio_sync::mpsc;
 
-use std::task::{Context, Poll};
+use std::task::{Context};
 use std::pin::Pin;
 use std::time::Duration;
 
-
-use rand::seq::SliceRandom;
-
-use crossbeam_channel as cb_channel;
-
-use romio::{TcpListener, TcpStream};
-
 use std::marker::PhantomData;
-use core::borrow::BorrowMut;
-use futures::sink::SinkExt;
-use std::thread::spawn;
 
 
 trait Handle<M> {
-    fn accept(&mut self, msg: M);
+    fn accept(&mut self, msg: M, cx: &mut InnerContext);
 }
 
-trait Actor: Send + 'static {
-    fn id(&self) -> String;
-}
+trait Actor: Send + 'static { }
 
 trait EnvelopeProxy {
     type Actor: Actor;
 
-    fn accept(&mut self, actor: &mut Self::Actor);
+    fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext);
 }
 
 struct Envelope<A: Actor + 'static>(Box<EnvelopeProxy<Actor = A>>);
@@ -63,9 +49,9 @@ struct EnvelopeInner<A, M> {
 impl<A, M> EnvelopeProxy for EnvelopeInner<A, M> where A: Actor + Handle<M>, M: 'static  {
     type Actor = A;
 
-    fn accept(&mut self, actor: &mut Self::Actor) {
+    fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext) {
         if let Some(msg) = self.msg.take() {
-            <Self::Actor as Handle<M>>::accept(actor, msg);
+            <Self::Actor as Handle<M>>::accept(actor, msg, cx);
         }
     }
 }
@@ -82,65 +68,70 @@ impl<A> Envelope<A> where A: Actor {
 impl<A> EnvelopeProxy for Envelope<A> where A: Actor {
     type Actor = A;
 
-    fn accept(&mut self, actor: &mut Self::Actor) {
-        self.0.accept(actor);
+    fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext) {
+        self.0.accept(actor, cx);
     }
 }
 
 #[derive(Clone)]
 struct Mailbox<A> where A: Actor {
-    tx: mpsc::Sender<Envelope<A>>,
+    tx: mpsc::UnboundedSender<Envelope<A>>,
     //tx: cb_channel::Sender<Envelope<A>>,
 }
 
 unsafe impl<A> Send for Mailbox<A> where A: Actor {}
 
 impl<A> Mailbox<A> where A: Actor {
-    fn new(inbox: mpsc::Sender<Envelope<A>>) -> Self {
+    fn new(inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
     //fn new(inbox: cb_channel::Sender<Envelope<A>>) -> Self {
         Mailbox {
             tx: inbox,
         }
     }
 
+    // Can't use Clone for &Mailbox due to blanket impl
     fn copy(&self) -> Self {
         Mailbox::new(self.tx.clone())
     }
 
-    fn send<M>(&self, msg: M) where A: Actor + Handle<M>, M: 'static  {
-        let mut tx = self.tx.clone();
+    fn send<M>(&self, msg: M) where A: Actor + Handle<M>, M: 'static {
         let env = Envelope::new(msg);
-
-        executor::block_on(tx.send(env));
-        //tx.start_send(env).expect("Could not send, ju!");
+        let mut tx = self.tx.clone();
+        tx.try_send(env);
     }
 }
 
 struct Dummy {
-    message: String,
+    str_count: usize,
+    int_count: usize,
 }
 
 impl Dummy {
-    fn new(inner: &str) -> Self {
-        Dummy { message: inner.to_string() }
+    fn new() -> Self {
+        Dummy {
+            str_count: 0,
+            int_count: 0,
+        }
     }
 }
 
-impl Actor for Dummy {
-    fn id(&self) -> String {
-        format!("Dummy {{ {} }}", self.message)
-    }
-}
+impl Actor for Dummy { }
 
 impl Handle<String> for Dummy {
-    fn accept(&mut self, msg: String) {
-        println!("I got a string message, {}", msg);
+    fn accept(&mut self, msg: String, cx: &mut InnerContext) {
+        self.str_count += 1;
+        println!("I got a string message, {}, {}/{}", msg, self.str_count, self.int_count);
     }
 }
 
 impl Handle<usize> for Dummy {
-    fn accept(&mut self, msg: usize) {
-        println!("I got a numerical message, {}", msg);
+    fn accept(&mut self, msg: usize, cx: &mut InnerContext) {
+        self.int_count += 1;
+        println!("I got a numerical message, {} {}/{}", msg, self.str_count, self.int_count);
+        if self.int_count > 10 {
+            println!("I am stopping now..");
+            cx.state = ActorState::Stopping;
+        }
     }
 }
 
@@ -152,61 +143,52 @@ struct System {
 }
 
 trait ActorContext: Send {
-    fn inner_poll(&mut self, ctx: &mut Context) -> Poll<()>;
+    fn inner_poll(&mut self) -> Poll<(), ()>;
 }
 
-impl core::future::Future for System {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        println!("I am a system?");
-
-        let w = cx.waker().clone();
-
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(2));
-            w.wake();
-        });
-
-
-        Poll::Pending
-    }
+#[derive(PartialEq)]
+enum ActorState {
+    Started,
+    Stopping,
+    Stopped,
 }
 
 struct ActorBundle<A: Actor> {
     actor: A,
-    recv: mpsc::Receiver<Envelope<A>>,
-    //recv: cb_channel::Receiver<Envelope<A>>,
+    recv: mpsc::UnboundedReceiver<Envelope<A>>,
+    inner: InnerContext,
 }
 
-//impl<A> core::marker::Unpin for ActorBundle<A> where A: Actor {}
-//unsafe impl<A> Send for ActorBundle<A> where A: Actor {}
+struct InnerContext {
+    state: ActorState,
+}
 
 impl<A> ActorContext for ActorBundle<A> where A: Actor {
-
-    fn inner_poll(&mut self, cx: &mut Context) -> Poll<()> {
-
-        loop { // TODO: this shouldnt be here.
-            match self.recv.poll_next_unpin(cx) {
-                Poll::Ready(Some(mut msg)) => {
-                    //println!("Working with msg: {}/{}", self.actor.id(), msg);
-                    //println!("Got a message!");
-                    msg.accept(&mut self.actor);
+    fn inner_poll(&mut self) -> Poll<(), ()> {
+        loop { // TODO: this loop shouldnt have to be here.
+            match self.recv.poll() {
+                Ok(Async::Ready(Some(mut msg))) => {
+                    msg.accept(&mut self.actor, &mut self.inner);
+                    if self.inner.state == ActorState::Stopping {
+                        // Is this how we stop?
+                        self.recv.close();
+                        break Ok(Async::Ready(()));
+                    }
                 },
 
-                Poll::Pending => { return Poll::Pending; },
-                Poll::Ready(None) => { return Poll::Ready(()) },
+                Ok(Async::Ready(None)) => { return Ok(Async::Ready(())) },
+                _ => { return Ok(Async::NotReady) },
             }
         }
-
     }
 }
 
 impl Future for Box<dyn ActorContext> {
-    type Output = ();
+    type Item = ();
+    type Error = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        self.inner_poll(cx)
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.inner_poll()
     }
 }
 
@@ -214,7 +196,7 @@ impl System {
     fn new() -> Self {
         System {
             started: false,
-            threadpool: ThreadPool::new().unwrap(),
+            threadpool: ThreadPool::new(),
             actors: Vec::new(),
             registry: HashMap::new(),
         }
@@ -222,14 +204,15 @@ impl System {
 
     fn start<'s, 'a, A: 'a>(&'s mut self, actor: A) -> Mailbox<A> where A: Actor {
         //let (tx, rx) = cb_channel::unbounded();
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::unbounded_channel();
         let bundle: Box<dyn ActorContext> = Box::new(ActorBundle {
             actor: actor,
             recv: rx,
+            inner: InnerContext{ state: ActorState::Started },
         });
 
         if self.started {
-            self.threadpool.spawn_obj(FutureObj::new(Box::pin(bundle)));
+            self.threadpool.spawn(bundle);
         } else {
             self.actors.push(bundle);
         }
@@ -250,26 +233,20 @@ impl System {
         None
     }
 
-    fn run(&mut self) {
-        let mut pool = self.threadpool.clone();
+    fn run_until_completion(mut self) {
+        let c = self.threadpool.sender().clone();
+
         for actor in self.actors.drain(..) {
-            pool.spawn_obj(FutureObj::new(Box::pin(actor)));
+            println!("Spawning an actor, lol");
+            self.threadpool.spawn(actor);
         }
 
-        let pinned = Pin::new(self);
-        pool.run(pinned);
-/*
-        for mut actor in self.actors.drain(..) {
-            println!("Starting an actor!");
-            threadpool
-                .spawn(run_actor(actor))
-                .expect("Could not spawn actor.");
-        }
-*/
+        println!("Waiting for system do stop...");
+        self.threadpool.shutdown().wait().unwrap();
         println!("Done with system?");
     }
 
-    fn spawn<F: Future<Output=()> + Send + 'static>(&mut self, fut: F) {
+    fn spawn<F: Future<Item=(), Error=()> + Send + 'static>(&self, fut: F) {
         self.threadpool.spawn(fut);
     }
 }
@@ -277,11 +254,11 @@ impl System {
 fn main() {
     let mut sys = System::new();
 
-    sys.register("dummy", Dummy::new("Hej"));
+    sys.register("dummy", Dummy::new());
     let act = sys.find::<Dummy>("dummy").unwrap();
 
     for x in 0..50 {
-        //let act = sys.start(Dummy::new(&format!("Actor {}", x)));
+        let act = sys.start(Dummy::new());
         //let act = sys.find::<Dummy>("dummy").unwrap();
         for _ in 0..1000 {
             act.send("Hej på dig".to_string());
@@ -289,15 +266,15 @@ fn main() {
             act.send(12);
         }
     }
-    /*
-    sys.spawn(lazy(move |_| {
-        std::thread::sleep(Duration::from_secs(2));
-        //act.send(134);
+
+    sys.spawn(lazy(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        for _x in 0..100 {
+            std::thread::sleep(Duration::from_millis(100));
+            act.send(13000);
+        }
+        Ok(())
     }));
-    */
-    sys.run();
 
-    // Not good...
-    std::thread::sleep(std::time::Duration::from_secs(1));
-
+    sys.run_until_completion();
 }
