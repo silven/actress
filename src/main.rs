@@ -49,9 +49,9 @@ trait EnvelopeProxy {
     fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext);
 }
 
-struct Envelope<A: Actor + 'static>(Box<EnvelopeProxy<Actor = A>>);
+struct Envelope<A: Actor>(Box<EnvelopeProxy<Actor = A>>);
 
-unsafe impl<A> Send for Envelope<A> where A: Actor{}
+unsafe impl<A> Send for Envelope<A> where A: Actor {}
 
 struct EnvelopeInner<A, M> where M: Message, A: Actor + Handle<M> {
     act: PhantomData<*const A>,
@@ -64,10 +64,10 @@ impl<A, M> EnvelopeProxy for EnvelopeInner<A, M> where A: Actor + Handle<M>, M: 
 
     fn accept(&mut self, actor: &mut Self::Actor, cx: &mut InnerContext)  {
         if let Some(msg) = self.msg.take() {
-            let x = <Self::Actor as Handle<M>>::accept(actor, msg, cx);
-            // TODO; Reply here
+            let result = <Self::Actor as Handle<M>>::accept(actor, msg, cx);
+
             if let Some(tx) = self.reply.take() {
-                tx.send(x);
+                tx.send(result); // TODO; What to do if we can't send a reply?
             }
         } else {
             panic!("No message?");
@@ -106,11 +106,7 @@ impl<A> EnvelopeProxy for Envelope<A> where A: Actor {
 #[derive(Clone)]
 struct Mailbox<A> where A: Actor {
     tx: mpsc::UnboundedSender<Envelope<A>>,
-    //tx: cb_channel::Sender<Envelope<A>>,
 }
-
-unsafe impl<A> Send for Mailbox<A> where A: Actor {}
-
 
 #[derive(Debug)]
 enum MailboxSendError {
@@ -125,7 +121,6 @@ enum MailboxAskError {
 
 impl<A> Mailbox<A> where A: Actor {
     fn new(inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
-    //fn new(inbox: cb_channel::Sender<Envelope<A>>) -> Self {
         Mailbox {
             tx: inbox,
         }
@@ -185,7 +180,18 @@ impl Handle<String> for Dummy {
         self.str_count += 1;
         println!("I got a string message, {}, {}/{}", msg, self.str_count, self.int_count);
 
-        if msg == "mer" {
+        if &msg == "overflow" {
+            match cx.spawn_actor(Dummy::new()) {
+                Some(mailbox) => {
+                    mailbox.send(msg.clone());
+                },
+                None => {
+                    println!("I could not spawn overflower!!");
+                },
+            }
+        }
+
+        if &msg == "mer" {
             match cx.spawn_actor(Dummy::new()) {
                 Some(mailbox) => {
                     mailbox.send("hejsan!".to_owned());
@@ -209,7 +215,7 @@ impl Handle<usize> for Dummy {
     fn accept(&mut self, msg: usize, cx: &mut InnerContext) -> usize {
         self.int_count += 1;
         println!("I got a numerical message, {} {}/{}", msg, self.str_count, self.int_count);
-        if self.int_count > 10 {
+        if self.int_count >= 100 {
             println!("I am stopping now..");
             cx.state = ActorState::Stopping;
         }
@@ -219,13 +225,9 @@ impl Handle<usize> for Dummy {
 
 struct System {
     started: bool,
-    context: Arc<SystemContext>,
-    actors: Vec<Box<dyn ActorContext>>,
+    threadpool: ThreadPool,
+    context: SystemContext,
     registry: HashMap<String, Box<dyn Any>>,
-}
-
-trait ActorContext: Send {
-    fn inner_poll(&mut self) -> Poll<(), ()>;
 }
 
 #[derive(PartialEq)]
@@ -242,57 +244,62 @@ struct ActorBundle<A: Actor> {
 }
 
 
+#[derive(Clone)]
 struct SystemContext {
-    threadpool: ThreadPool,
+    spawner: Sender,
 }
 
 impl SystemContext {
-    fn new() -> Self {
+    fn new(spawner: Sender) -> Self {
         SystemContext {
-            threadpool: ThreadPool::new(),
+            spawner: spawner
         }
     }
 
-    fn spawn_future<F: Future<Item=(), Error=()> + Send + 'static>(&self, fut: F) {
-        self.threadpool.spawn(fut);
+    fn spawn_future<F: Future<Item=(), Error=()> + Send + 'static>(&self, fut: F) -> bool {
+        self.spawner.spawn(fut).is_ok()
     }
 
-    fn spawn_actor<'s, 'a, A: 'a>(self: &Arc<SystemContext>, actor: A) -> Mailbox<A> where A: Actor {
+    fn spawn_actor<'s, 'a, A: 'a>(&self, actor: A) -> Result<Mailbox<A>, ()>
+        where A: Actor
+    {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let bundle: Box<dyn ActorContext> = Box::new(ActorBundle {
+        let bundle = ActorBundle {
             actor: actor,
             recv: rx,
             inner: InnerContext {
                 state: ActorState::Started,
-                system: Arc::downgrade(self),
+                system: self.clone(),
             },
-        });
+        };
 
-        self.spawn_future(bundle);
-
-        Mailbox::<A>::new(tx)
+        match self.spawn_future(bundle) {
+            true => Ok(Mailbox::<A>::new(tx)),
+            false => Err(()),
+        }
     }
 }
 
 struct InnerContext {
     state: ActorState,
-    system: Weak<SystemContext>,
+    system: SystemContext,
 }
 
 impl InnerContext {
     fn spawn_actor<A>(&mut self, actor: A) -> Option<Mailbox<A>> where A: Actor {
-        println!("Stuff: {:?}/{:?}", self.system.strong_count(), self.system.weak_count());
-        if let Some(system) = self.system.upgrade() {
-            Some(system.spawn_actor(actor))
-        } else {
-            None
+        match self.system.spawn_actor(actor) {
+            Ok(mailbox) => Some(mailbox),
+            Err(_) => None,
         }
     }
 }
 
-impl<A> ActorContext for ActorBundle<A> where A: Actor {
-    fn inner_poll(&mut self) -> Poll<(), ()> {
+impl<A> Future for ActorBundle<A> where A: Actor {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop { // TODO: this loop shouldnt have to be here.
             match self.recv.poll() {
                 Ok(Async::Ready(Some(mut msg))) => {
@@ -311,50 +318,42 @@ impl<A> ActorContext for ActorBundle<A> where A: Actor {
     }
 }
 
-impl Future for Box<dyn ActorContext> {
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.inner_poll()
-    }
-}
-
 impl System {
     fn new() -> Self {
+        let pool = ThreadPool::new();
+        let spawner = pool.sender().clone();
         System {
             started: false,
-            context: Arc::new(SystemContext::new()),
-            actors: Vec::new(),
+            threadpool: pool,
+            context: SystemContext::new(spawner),
             registry: HashMap::new(),
         }
     }
 
-    fn start<'s, 'a, A: 'a>(&'s mut self, actor: A) -> Mailbox<A> where A: Actor {
+    fn start<A>(&mut self, actor: A) -> Mailbox<A> where A: Actor {
         let (tx, rx) = mpsc::unbounded_channel();
-        let bundle: Box<dyn ActorContext> = Box::new(ActorBundle {
+
+        let bundle = ActorBundle {
             actor: actor,
             recv: rx,
-            inner: InnerContext{
+            inner: InnerContext {
                 state: ActorState::Started,
-                system: Arc::downgrade(&self.context),
+                system: self.context.clone(),
             },
-        });
+        };
 
-        if self.started {
-            self.context.spawn_future(bundle);
-        } else {
-            self.actors.push(bundle);
-        }
+        self.context.spawn_future(bundle);
+
         Mailbox::<A>::new(tx)
     }
 
-    fn register<'s, 'n, A: 'static>(&'s mut self, name: &'n str, actor: A) where A: Actor {
+    // TODO; Move registry to SystemContext to make available to Actors
+    fn register<A>(&mut self, name: &str, actor: A) where A: Actor {
         let mailbox = self.start(actor);
         self.registry.insert(name.to_string(), Box::new(mailbox));
     }
 
-    fn find<'s, 'n, A>(&'s self, name: &'n str) -> Option<Mailbox<A>> where A: Actor {
+    fn find<A>(&self, name: &str) -> Option<Mailbox<A>> where A: Actor {
         if let Some(anybox) = self.registry.get(name) {
             if let Some(mailbox) = anybox.downcast_ref::<Mailbox<A>>() {
                 return Some(mailbox.copy());
@@ -364,19 +363,8 @@ impl System {
     }
 
     fn run_until_completion(mut self) {
-        for actor in self.actors.drain(..) {
-            println!("Spawning an actor, lol");
-            self.context.spawn_future(actor);
-        }
-
-        println!("Waiting for system do stop...");
-        //std::thread::sleep(Duration::from_secs(5));
-        // TODO: Put this in a loop and spin until unique?
-        if let Ok(context) = Arc::try_unwrap(self.context) {
-            context.threadpool.shutdown().wait().unwrap();
-        } else {
-            panic!("What the hell?");
-        }
+        println!("Waiting for system to stop...");
+        self.threadpool.shutdown_on_idle().wait().unwrap();
         println!("Done with system?");
     }
 
@@ -391,6 +379,7 @@ fn main() {
     sys.register("dummy", Dummy::new());
     let act = sys.find::<Dummy>("dummy").unwrap();
 
+    //act.send("overflow".to_owned());
     for x in 0..50 {
         let act = sys.start(Dummy::new());
         //let act = sys.find::<Dummy>("dummy").unwrap();
@@ -403,17 +392,12 @@ fn main() {
 
     sys.spawn_future(lazy(move || {
         std::thread::sleep(Duration::from_secs(1));
-        for _x in 0..8 {
-            std::thread::sleep(Duration::from_millis(100));
+        for _x in 0..100 {
+            std::thread::sleep(Duration::from_millis(10));
             match act.ask(13000) {
                 Ok(r) => println!("Got an {}", r),
                 Err(e) => println!("No reply {:?}", e),
             }
-        }
-
-        match act.send("mer".to_owned()) {
-            Ok(_) => (),
-            Err(e) => println!("Could not send final msg"),
         }
 
         Ok(())
