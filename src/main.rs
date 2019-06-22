@@ -27,8 +27,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Weak, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// Messages need to be Clone for peek to work :(
-trait Message: Clone + 'static {
+trait Message: 'static {
     type Result;
 }
 
@@ -70,47 +69,28 @@ impl<A, M> EnvelopeProxy for EnvelopeInner<A, M> where A: Actor + Handle<M>, M: 
     type Actor = A;
 
     fn accept(&mut self, actor: &mut ActorBundle<A>)  {
-        if let Some(mut msg) = self.msg.take() {
+        let mut msg = self.msg.take().unwrap();
+        let listener = actor.get_listener::<M>();
 
-            let listener: Option<Arc<PeekGrab<M>>> = {
-                if let Ok(listeners) = actor.listeners.lock() {
-                    if let Some(listener) = listeners.get(&msg.type_id()) {
-                        match listener.clone().downcast::<PeekGrab<M>>() {
-                            Ok(l) => Some(l),
-                            Err(_) => None,
-                        }
-                    } else { None }
-                } else { None }
-            };
-
-            if let Some(arc) = listener {
-                match *arc {
-                    PeekGrab::Peek(ref peek) => {
-                        peek(&msg);
+        if let Some(arc) = listener {
+            match *arc {
+                PeekGrab::Peek(ref peek) => { peek(&msg); },
+                PeekGrab::Alter(ref alter) => { msg = alter(msg); },
+                PeekGrab::Grab(ref grab) => {
+                    let result = grab(msg);
+                    if let Some(tx) = self.reply.take() {
+                        tx.send(result); // TODO; What to do if we can't send a reply?
                     }
-                    PeekGrab::Alter(ref alter) => {
-                        msg = alter(msg);
-                    }
-                    PeekGrab::Grab(ref grab) => {
-                        let result = grab(msg);
-                        if let Some(tx) = self.reply.take() {
-                            tx.send(result); // TODO; What to do if we can't send a reply?
-                        }
-                        return;
-                    }
-                    _ => (),
-                }
+                    return;
+                },
             }
+        }
 
-            let result = <Self::Actor as Handle<M>>::accept(
-                &mut actor.actor, msg, &mut actor.inner);
+        let result = <Self::Actor as Handle<M>>::accept(
+            &mut actor.actor, msg, &mut actor.inner);
 
-            if let Some(tx) = self.reply.take() {
-                tx.send(result); // TODO; What to do if we can't send a reply?
-            }
-
-        } else {
-            panic!("No message?");
+        if let Some(tx) = self.reply.take() {
+            tx.send(result); // TODO; What to do if we can't send a reply?
         }
     }
 }
@@ -318,6 +298,18 @@ struct ActorBundle<A: Actor> {
     recv: mpsc::UnboundedReceiver<Envelope<A>>,
     inner: InnerContext,
     listeners: Arc<Mutex<AnyMap>>,
+}
+
+impl<A> ActorBundle<A> where A: Actor {
+    fn get_listener<M>(&self) -> Option<Arc<PeekGrab<M>>> where A: Handle<M>, M: Message {
+        if let Ok(dict) = self.listeners.lock() {
+            dict.get(&TypeId::of::<M>())
+                .and_then(|arc|
+                    arc.clone().downcast::<PeekGrab<M>>().ok())
+        } else {
+            None
+        }
+    }
 }
 
 
