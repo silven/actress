@@ -22,251 +22,19 @@ use std::task::Context;
 use std::time::Duration;
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-trait Message: 'static {
-    type Result;
-}
 
-trait Handle<M: Message> {
-    fn accept(&mut self, msg: M, cx: &mut ActorContext) -> M::Result;
-}
+mod actor;
+use actor::{Actor, Handle, Message};
 
-trait Actor: Send + 'static {
-    fn starting(&mut self) {}
-    fn started(&mut self) {}
+mod mailbox;
 
-    fn stopping(&mut self) {}
-    fn stopped(&mut self) {}
-}
+mod system;
+use system::{System};
+use crate::actor::ActorContext;
 
-trait EnvelopeProxy {
-    type Actor: Actor;
-
-    fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>);
-}
-
-struct Envelope<A: Actor>(Box<EnvelopeProxy<Actor = A>>);
-
-unsafe impl<A> Send for Envelope<A> where A: Actor {}
-
-struct EnvelopeInner<A, M>
-where
-    M: Message,
-    A: Actor + Handle<M>,
-{
-    act: PhantomData<*const A>,
-    msg: Option<M>,
-    reply: Option<oneshot::Sender<M::Result>>,
-}
-
-enum PeekGrab<M: Message> {
-    Peek(Box<Fn(&M) + Send + Sync + 'static>),
-    Alter(Box<Fn(M) -> M + Send + Sync + 'static>),
-    Grab(Box<Fn(M) -> M::Result + Send + Sync + 'static>),
-}
-
-impl<A, M> EnvelopeProxy for EnvelopeInner<A, M>
-where
-    A: Actor + Handle<M>,
-    M: Message,
-{
-    type Actor = A;
-
-    fn accept(&mut self, actor: &mut ActorBundle<A>) {
-        let mut msg = self.msg.take().unwrap();
-        let listener = actor.get_listener::<M>();
-
-        if let Some(arc) = listener {
-            match *arc {
-                PeekGrab::Peek(ref peek) => {
-                    peek(&msg);
-                }
-                PeekGrab::Alter(ref alter) => {
-                    msg = alter(msg);
-                }
-                PeekGrab::Grab(ref grab) => {
-                    let result = grab(msg);
-                    if let Some(tx) = self.reply.take() {
-                        tx.send(result); // TODO; What to do if we can't send a reply?
-                    }
-                    return;
-                }
-            }
-        }
-
-        let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
-
-        if let Some(tx) = self.reply.take() {
-            tx.send(result); // TODO; What to do if we can't send a reply?
-        }
-    }
-}
-
-impl<A> Envelope<A>
-where
-    A: Actor,
-{
-    fn new<M>(msg: M) -> Self
-    where
-        A: Handle<M>,
-        M: Message,
-    {
-        Envelope(Box::new(EnvelopeInner {
-            act: PhantomData,
-            msg: Some(msg),
-            reply: None,
-        }))
-    }
-
-    fn with_reply<M>(msg: M, reply_to: oneshot::Sender<M::Result>) -> Self
-    where
-        A: Handle<M>,
-        M: Message,
-    {
-        Envelope(Box::new(EnvelopeInner {
-            act: PhantomData,
-            msg: Some(msg),
-            reply: Some(reply_to),
-        }))
-    }
-}
-
-impl<A> EnvelopeProxy for Envelope<A>
-where
-    A: Actor,
-{
-    type Actor = A;
-
-    fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>) {
-        self.0.accept(actor);
-    }
-}
-
-type AnyMap = HashMap<TypeId, Arc<Any + Send + Sync>>;
-
-struct Mailbox<A>
-where
-    A: Actor,
-{
-    tx: mpsc::UnboundedSender<Envelope<A>>,
-    listeners: Weak<Mutex<AnyMap>>,
-}
-
-#[derive(Debug)]
-enum MailboxSendError {
-    CouldNotSend,
-}
-
-#[derive(Debug)]
-enum MailboxAskError {
-    CouldNotSend,
-    CouldNotRecv,
-}
-
-impl<A> Mailbox<A>
-where
-    A: Actor,
-{
-    fn new(inbox: mpsc::UnboundedSender<Envelope<A>>, listeners: Weak<Mutex<AnyMap>>) -> Self {
-        Mailbox {
-            tx: inbox,
-            listeners: listeners,
-        }
-    }
-
-    // Can't use Clone for &Mailbox due to blanket impl
-    fn copy(&self) -> Self {
-        Mailbox {
-            tx: self.tx.clone(),
-            listeners: self.listeners.clone(),
-        }
-    }
-
-    fn send<M>(&self, msg: M) -> Result<(), MailboxSendError>
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-    {
-        let env = Envelope::new(msg);
-        let mut tx = self.tx.clone();
-        match tx.try_send(env) {
-            Ok(()) => Ok(()),
-            Err(_) => Err(MailboxSendError::CouldNotSend),
-        }
-    }
-
-    fn peek<M, F>(&self, handler: F)
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-        F: Fn(&M) + Send + Sync + 'static,
-    {
-        self.add_listener(PeekGrab::Peek(Box::new(handler)));
-    }
-
-    fn alter<M, F>(&self, handler: F)
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-        F: Fn(M) -> M + Send + Sync + 'static,
-    {
-        self.add_listener(PeekGrab::Alter(Box::new(handler)));
-    }
-
-    fn grab<M, F>(&self, handler: F)
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-        F: Fn(M) -> M::Result + Send + Sync + 'static,
-    {
-        self.add_listener(PeekGrab::Grab(Box::new(handler)));
-    }
-
-    fn clear_listener<M>(&self)
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-    {
-        if let Some(arc) = self.listeners.upgrade() {
-            if let Ok(mut map) = arc.lock() {
-                map.remove(&TypeId::of::<M>());
-            }
-        }
-    }
-
-    fn add_listener<M>(&self, listener: PeekGrab<M>)
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-    {
-        if let Some(arc) = self.listeners.upgrade() {
-            if let Ok(mut map) = arc.lock() {
-                map.insert(TypeId::of::<M>(), Arc::new(listener));
-            }
-        }
-    }
-
-    fn ask<M>(&self, msg: M) -> Result<M::Result, MailboxAskError>
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-    {
-        let (tx, rx) = oneshot::channel();
-        let env = Envelope::with_reply(msg, tx);
-        let mut tx = self.tx.clone();
-
-        return match tx.try_send(env) {
-            Ok(()) => match rx.wait() {
-                // TODO Can we do without the wait() call?
-                Ok(response) => Ok(response),
-                Err(_) => Err(MailboxAskError::CouldNotRecv),
-            },
-            Err(_) => Err(MailboxAskError::CouldNotSend),
-        };
-    }
-}
 
 struct Dummy {
     str_count: usize,
@@ -336,237 +104,9 @@ impl Handle<usize> for Dummy {
         );
         if self.int_count >= 100 {
             println!("I am stopping now..");
-            cx.state = ActorState::Stopping;
+            cx.stop();
         }
         return msg;
-    }
-}
-
-struct System {
-    started: bool,
-    threadpool: ThreadPool,
-    context: SystemContext,
-}
-
-#[derive(PartialEq)]
-enum ActorState {
-    Started,
-    Stopping,
-    Stopped,
-}
-
-struct ActorBundle<A: Actor> {
-    actor: A,
-    recv: mpsc::UnboundedReceiver<Envelope<A>>,
-    inner: ActorContext,
-    listeners: Arc<Mutex<AnyMap>>, // Mailboxes have Weak-pointers to this field
-                                   //children: Vec<Weak<dyn ActorContainer>>,
-}
-
-impl<A> ActorBundle<A>
-where
-    A: Actor,
-{
-    fn get_listener<M>(&self) -> Option<Arc<PeekGrab<M>>>
-    where
-        A: Handle<M>,
-        M: Message,
-    {
-        if let Ok(dict) = self.listeners.lock() {
-            dict.get(&TypeId::of::<M>())
-                .and_then(|arc| arc.clone().downcast::<PeekGrab<M>>().ok())
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Clone)]
-struct SystemContext {
-    spawner: Sender,
-    registry: Arc<Mutex<HashMap<String, Box<dyn Any + Send + 'static>>>>,
-}
-
-unsafe impl Send for SystemContext {}
-
-impl SystemContext {
-    fn new(spawner: Sender) -> Self {
-        SystemContext {
-            spawner: spawner,
-            registry: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn register<A>(&mut self, name: &str, actor: A)
-    where
-        A: Actor,
-    {
-        let mailbox = self.spawn_actor(actor).unwrap();
-
-        if let Ok(mut registry) = self.registry.lock() {
-            registry.insert(name.to_string(), Box::new(mailbox));
-        }
-    }
-
-    fn find<A>(&self, name: &str) -> Option<Mailbox<A>>
-    where
-        A: Actor,
-    {
-        if let Ok(registry) = self.registry.lock() {
-            if let Some(anybox) = registry.get(name) {
-                if let Some(mailbox) = anybox.downcast_ref::<Mailbox<A>>() {
-                    return Some(mailbox.copy());
-                }
-            }
-        }
-        None
-    }
-
-    fn spawn_future<F: Future<Item = (), Error = ()> + Send + 'static>(&self, fut: F) -> bool {
-        self.spawner.spawn(fut).is_ok()
-    }
-
-    fn spawn_actor<'s, 'a, A: 'a>(&self, actor: A) -> Result<Mailbox<A>, ()>
-    where
-        A: Actor,
-    {
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let listeners = Arc::new(Mutex::new(HashMap::new()));
-        let mailbox = Mailbox::<A>::new(tx, Arc::downgrade(&listeners));
-
-        let mut bundle = ActorBundle {
-            actor: actor,
-            recv: rx,
-            listeners: listeners,
-            inner: ActorContext {
-                state: ActorState::Started,
-                system: self.clone(),
-            },
-        };
-
-        Actor::started(&mut bundle.actor);
-
-        match self.spawn_future(bundle) {
-            true => Ok(mailbox),
-            false => Err(()),
-        }
-    }
-}
-
-#[derive(Clone)]
-enum SystemMessage {
-    Stop,
-}
-
-impl Message for SystemMessage {
-    type Result = ();
-}
-
-impl Handle<SystemMessage> for Actor {
-    fn accept(&mut self, msg: SystemMessage, cx: &mut ActorContext) -> () {
-        cx.state = ActorState::Stopping;
-    }
-}
-
-struct ActorContext {
-    state: ActorState,
-    system: SystemContext,
-}
-
-impl ActorContext {
-    fn spawn_actor<A>(&mut self, actor: A) -> Option<Mailbox<A>>
-    where
-        A: Actor,
-    {
-        match self.system.spawn_actor(actor) {
-            Ok(mailbox) => Some(mailbox),
-            Err(_) => None,
-        }
-    }
-
-    fn register<A>(&mut self, name: &str, actor: A)
-    where
-        A: Actor,
-    {
-        self.system.register(name, actor);
-    }
-
-    fn find<A>(&self, name: &str) -> Option<Mailbox<A>>
-    where
-        A: Actor,
-    {
-        self.system.find(name)
-    }
-}
-
-impl<A> Future for ActorBundle<A>
-where
-    A: Actor,
-{
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        loop {
-            // TODO: this loop shouldnt have to be here?
-            match self.recv.poll() {
-                Ok(Async::Ready(Some(mut msg))) => {
-                    let _ = msg.accept(self);
-                    if self.inner.state == ActorState::Stopping {
-                        // Is this how we stop?
-                        self.recv.close();
-                        break Ok(Async::Ready(()));
-                    }
-                }
-
-                Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
-                _ => return Ok(Async::NotReady),
-            }
-        }
-    }
-}
-
-impl System {
-    fn new() -> Self {
-        let pool = ThreadPool::new();
-        let spawner = pool.sender().clone();
-        System {
-            started: false,
-            threadpool: pool,
-            context: SystemContext::new(spawner),
-        }
-    }
-
-    fn start<A>(&mut self, actor: A) -> Mailbox<A>
-    where
-        A: Actor,
-    {
-        self.context.spawn_actor(actor).unwrap()
-    }
-
-    fn register<A>(&mut self, name: &str, actor: A)
-    where
-        A: Actor,
-    {
-        self.context.register(name, actor);
-    }
-
-    fn find<A>(&self, name: &str) -> Option<Mailbox<A>>
-    where
-        A: Actor,
-    {
-        self.context.find(name)
-    }
-
-    fn run_until_completion(mut self) {
-        println!("Waiting for system to stop...");
-        self.threadpool.shutdown_on_idle().wait().unwrap();
-        println!("Done with system?");
-    }
-
-    fn spawn_future<F: Future<Item = (), Error = ()> + Send + 'static>(&self, fut: F) {
-        self.context.spawn_future(fut);
     }
 }
 
@@ -576,12 +116,15 @@ fn main() {
     sys.register("dummy", Dummy::new());
     let act = sys.find::<Dummy>("dummy").unwrap();
 
-    act.peek::<usize, _>(|x| println!("I've got an x: {}", x));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let cnt = Arc::clone(&counter);
+
+    act.peek::<usize, _>(move |_x| { cnt.fetch_add(1, Ordering::SeqCst); } );
 
     //act.send("overflow".to_owned());
     for x in 0..50 {
-        let act = sys.start(Dummy::new());
-        act.alter::<usize, _>(|x| x + 1);
+        //let act = sys.start(Dummy::new());
+        //act.alter::<usize, _>(|x| x + 1);
 
         //let act = sys.find::<Dummy>("dummy").unwrap();
         for _ in 0..1000 {
@@ -607,7 +150,7 @@ fn main() {
         for _x in 0..100 {
             std::thread::sleep(Duration::from_millis(10));
             match act.ask(13000) {
-                Ok(r) => println!("Got an {}", r),
+                   Ok(r) => println!("Got an {}", r),
                 Err(e) => println!("No reply {:?}", e),
             }
         }
@@ -616,4 +159,5 @@ fn main() {
     }));
 
     sys.run_until_completion();
+    println!("The counter is: {}", counter.load(Ordering::SeqCst));
 }
