@@ -1,30 +1,15 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::io;
-use std::rc::Rc;
-
-use futures::{Async, Poll};
-
-use futures::executor;
-use futures::future::lazy;
 use futures::future::Future;
-use futures::stream::Stream;
-use futures::task::Spawn;
 
 use tokio_sync::{mpsc, oneshot};
-use tokio_threadpool::{Sender, ThreadPool};
 
-use std::pin::Pin;
-use std::task::Context;
-use std::time::Duration;
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-
-use crate::actor::{Actor, ActorContext, Message, Handle};
+use crate::actor::{Actor, Message, Handle};
 
 use crate::system::{ActorBundle};
 
@@ -134,7 +119,7 @@ impl<A> EnvelopeProxy for Envelope<A>
 
 type AnyMap = HashMap<TypeId, Arc<Any + Send + Sync>>;
 
-pub(crate) struct Mailbox<A>
+pub struct Mailbox<A>
     where
         A: Actor,
 {

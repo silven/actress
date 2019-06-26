@@ -1,40 +1,14 @@
-#![feature(async_await, arbitrary_self_types, weak_counts)]
-#![allow(unused_imports)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc};
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::io;
-use std::rc::Rc;
-
-use futures::{Async, Poll};
-
-use futures::executor;
 use futures::future::lazy;
-use futures::future::Future;
-use futures::stream::Stream;
-use futures::task::Spawn;
 
-use tokio_sync::{mpsc, oneshot};
-use tokio_threadpool::{Sender, ThreadPool};
-
-use std::pin::Pin;
-use std::task::Context;
 use std::time::Duration;
 
-use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
-
-
-mod actor;
-use actor::{Actor, Handle, Message};
-
-mod mailbox;
-
-mod system;
-use system::{System};
-use crate::actor::ActorContext;
-
+use testing_rom::{
+    actor::{Actor, ActorContext, Handle, Message},
+    system::System,
+};
 
 struct Dummy {
     str_count: usize,
@@ -52,22 +26,36 @@ impl Dummy {
 
 impl Actor for Dummy {}
 
-impl Message for String {
+struct Msg<T>(T);
+
+impl Msg<String> {
+    fn new(msg: &str) -> Self {
+        Msg(msg.to_owned())
+    }
+}
+
+impl Msg<usize> {
+    fn new(msg: usize) -> Self {
+        Msg(msg)
+    }
+}
+
+impl Message for Msg<String> {
     type Result = String;
 }
 
-impl Handle<String> for Dummy {
-    fn accept(&mut self, msg: String, cx: &mut ActorContext) -> String {
+impl Handle<Msg<String>> for Dummy {
+    fn accept(&mut self, msg: Msg<String>, cx: &mut ActorContext) -> String {
         self.str_count += 1;
         println!(
             "I got a string message, {}, {}/{}",
-            msg, self.str_count, self.int_count
+            msg.0, self.str_count, self.int_count
         );
 
-        if &msg == "overflow" {
+        if &msg.0 == "overflow" {
             match cx.spawn_actor(Dummy::new()) {
                 Some(mailbox) => {
-                    mailbox.send(msg.clone());
+                    mailbox.send(Msg::<String>::new(&msg.0));
                 }
                 None => {
                     println!("I could not spawn overflower!!");
@@ -75,10 +63,10 @@ impl Handle<String> for Dummy {
             }
         }
 
-        if &msg == "mer" {
+        if &msg.0 == "mer" {
             match cx.spawn_actor(Dummy::new()) {
                 Some(mailbox) => {
-                    mailbox.send("hejsan!".to_owned());
+                    mailbox.send(Msg::<String>::new("hejsan!"));
                     println!("Spawned something!");
                 }
                 None => {
@@ -87,26 +75,26 @@ impl Handle<String> for Dummy {
             }
         }
 
-        return msg;
+        return msg.0;
     }
 }
 
-impl Message for usize {
+impl Message for Msg<usize> {
     type Result = usize;
 }
 
-impl Handle<usize> for Dummy {
-    fn accept(&mut self, msg: usize, cx: &mut ActorContext) -> usize {
+impl Handle<Msg<usize>> for Dummy {
+    fn accept(&mut self, msg: Msg<usize>, cx: &mut ActorContext) -> usize {
         self.int_count += 1;
         println!(
             "I got a numerical message, {} {}/{}",
-            msg, self.str_count, self.int_count
+            msg.0, self.str_count, self.int_count
         );
         if self.int_count >= 100 {
             println!("I am stopping now..");
             cx.stop();
         }
-        return msg;
+        return msg.0;
     }
 }
 
@@ -119,38 +107,40 @@ fn main() {
     let counter = Arc::new(AtomicUsize::new(0));
     let cnt = Arc::clone(&counter);
 
-    act.peek::<usize, _>(move |_x| { cnt.fetch_add(1, Ordering::SeqCst); } );
+    act.peek::<Msg<usize>, _>(move |_x| {
+        cnt.fetch_add(1, Ordering::SeqCst);
+    });
 
     //act.send("overflow".to_owned());
     for x in 0..50 {
         //let act = sys.start(Dummy::new());
-        //act.alter::<usize, _>(|x| x + 1);
+        //act.alter::<Msg<usize>, _>(|x| x + 1);
 
         //let act = sys.find::<Dummy>("dummy").unwrap();
         for _ in 0..1000 {
-            act.send("Hej på dig".to_string());
-            act.send("Hej på dig igen".to_string());
-            act.send(12);
+            act.send(Msg::<String>::new("Hej på dig"));
+            act.send(Msg::<String>::new("Hej på dig igen"));
+            act.send(Msg::<usize>::new(12));
         }
     }
 
     sys.spawn_future(lazy(move || {
         std::thread::sleep(Duration::from_secs(1));
-        act.grab::<usize, _>(|x| x + 1);
+        act.grab::<Msg<usize>, _>(|x| x.0 + 1);
 
         for _x in 0..100 {
             std::thread::sleep(Duration::from_millis(10));
-            match act.ask(13000) {
+            match act.ask(Msg::<usize>::new(13000)) {
                 Ok(r) => println!("Got an {}", r),
                 Err(e) => println!("No reply {:?}", e),
             }
         }
 
-        act.clear_listener::<usize>();
+        act.clear_listener::<Msg<usize>>();
         for _x in 0..100 {
             std::thread::sleep(Duration::from_millis(10));
-            match act.ask(13000) {
-                   Ok(r) => println!("Got an {}", r),
+            match act.ask(Msg::<usize>::new(13000)) {
+                Ok(r) => println!("Got an {}", r),
                 Err(e) => println!("No reply {:?}", e),
             }
         }

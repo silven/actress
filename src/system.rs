@@ -1,37 +1,24 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::io;
-use std::rc::Rc;
 
 use futures::{Async, Poll};
 
 type AnyMap = HashMap<TypeId, Arc<Any + Send + Sync>>;
 
-
-use futures::executor;
-use futures::future::lazy;
 use futures::future::Future;
-use futures::stream::Stream;
-use futures::task::Spawn;
 
-use tokio_sync::{mpsc, oneshot};
+use tokio_sync::{mpsc};
 use tokio_threadpool::{Sender, ThreadPool};
 
-use std::pin::Pin;
-use std::task::Context;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
-
-
-use crate::actor::{Actor, ActorState, ActorContext, Handle, Message};
+use crate::actor::{Actor, ActorContext, Handle, Message};
 
 use crate::mailbox::{Mailbox, Envelope, EnvelopeProxy, PeekGrab};
+use futures::stream::Stream;
 
-pub(crate) struct System {
+pub struct System {
     started: bool,
     threadpool: ThreadPool,
     context: SystemContext,

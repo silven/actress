@@ -5,7 +5,6 @@ authors = ["Mikael Silvén <mikael@silven.nu>"]
 edition = "2018"
 
 [dependencies]
-rand = "0.6.5"
 tokio-sync = "*"
 tokio-threadpool = "*"
 futures = "0.1.19"
