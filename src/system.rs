@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures::future::Future;
-use futures::stream::Stream;
-use futures::{Async, Poll};
+use futures::executor::block_on;
+use futures::stream::StreamExt;
+
+use futures::Poll;
 
 use tokio_sync::mpsc;
 
@@ -16,6 +18,8 @@ use mopa::mopafy;
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
 use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox, PeekGrab};
 
+use std::task::Context;
+
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 pub struct System {
@@ -23,47 +27,48 @@ pub struct System {
     context: SystemContext,
 }
 
+// TODO: Is this safe? It should be, the actor bundle itself should never move.
+impl<A> Unpin for ActorBundle<A> where A: Actor {}
+
 impl<A> Future for ActorBundle<A>
 where
     A: Actor,
 {
-    type Item = ();
-    type Error = ();
+    type Output = ();
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
         // TODO: this loop shouldn't have to be here?
         loop {
             if self.recv.is_none() {
                 panic!("Poll called after channel closed!");
             }
 
-            // Borrowchecker (rightfully) won't let me do this as a two step rocket where I first
-            // store the Option<&mut Channel> and then poll that. Not with the call to .take() inside
-            match self.recv.as_mut().unwrap().poll() {
-                Ok(Async::Ready(Some(mut msg))) => {
-                    msg.accept(self);
+            match self.recv.as_mut().unwrap().poll_recv(cx) {
+                Poll::Ready(Some(mut msg)) => {
+                    msg.accept(&mut self);
                     if self.inner.is_stopping() {
                         // Is this how we stop?
                         let mut rx = self.recv.take().unwrap();
                         rx.close();
 
-                        let backlog = rx.collect().wait().unwrap();
+                        // Only blocks a finite amount of time, since the channel is closed.
+                        let backlog: Vec<_> = block_on(rx.collect());
                         println!("Stopping actor {} with {} messages left in backlog", self.inner.id(), backlog.len());
 
-                        // Bikeshedding name
+                        // Bikeshedding name of this mechanism
                         match self.actor.backlog_policy() {
                             BacklogPolicy::Reject => backlog.into_iter()
                                 .for_each(|mut m| m.reject()),
                             BacklogPolicy::Flush => backlog.into_iter()
-                                .for_each(|mut m| m.accept(self)),
+                                .for_each(|mut m| m.accept(&mut self)),
                         };
 
-                        return Ok(Async::Ready(()));
+                        return Poll::Ready(());
                     }
                 }
 
-                Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
-                _ => return Ok(Async::NotReady),
+                Poll::Ready(None) => return Poll::Ready(()),
+                _ => return Poll::Pending,
             }
         }
     }
@@ -139,7 +144,7 @@ impl SystemContext {
         None
     }
 
-    pub(crate) fn spawn_future<F: Future<Item = (), Error = ()> + Send + 'static>(
+    pub(crate) fn spawn_future<F: Future<Output=()> + Send + 'static>(
         &self,
         fut: F,
     ) -> bool {
@@ -234,7 +239,7 @@ impl System {
         self.context.find(name)
     }
 
-    pub fn run_until_completion(mut self) {
+    pub fn run_until_completion(self) {
         println!("Waiting for system to stop...");
 
         match self.context.registry.lock() {
@@ -246,11 +251,11 @@ impl System {
             Err(_) => panic!("Could not terminate services..."),
         }
 
-        self.threadpool.shutdown_on_idle().wait().expect("Threadpool could not shutdown.");
+        self.threadpool.shutdown_on_idle().wait();
         println!("Done with system?");
     }
 
-    pub fn spawn_future<F: Future<Item = (), Error = ()> + Send + 'static>(&self, fut: F) {
+    pub fn spawn_future<F: Future<Output=()> + Send + 'static>(&self, fut: F) {
         self.context.spawn_future(fut);
     }
 }

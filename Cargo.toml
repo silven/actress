@@ -6,6 +6,6 @@ edition = "2018"
 
 [dependencies]
 mopa = "0.2"
-tokio-sync = "0.1"
-tokio-threadpool = "0.1"
-futures = "0.1.19"
+tokio-sync = { version = "0.2", git = "https://github.com/tokio-rs/tokio", features=["async-traits"]}
+tokio-threadpool = { version = "0.2", git = "https://github.com/tokio-rs/tokio" }
+futures-preview = "=0.3.0-alpha.16"

@@ -1,4 +1,4 @@
-use futures::future::lazy;
+#![feature(async_await)]
 
 use std::time::Duration;
 
@@ -60,25 +60,19 @@ fn main() {
 
     let a = act.copy();
 
-    system.spawn_future(lazy(move || {
+    system.spawn_future(async move {
         for x in 1..100 {
             a.send(Msg::Compute(x));
             std::thread::sleep(Duration::from_micros(x));
         }
-        Ok(())
-    }));
+    });
 
-    //let foo = system.start(Dummy::new());
-
-    system.spawn_future(lazy(move || {
+    system.spawn_future(async move {
         let x = act.ask(Msg::Respond);
         println!("The result was: {:?}", x);
         act.send(SystemMessage::Stop);
-
-        Ok(())
-    }));
+    });
 
     std::thread::sleep(Duration::from_secs(1));
-
     system.run_until_completion();
 }

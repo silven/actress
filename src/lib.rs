@@ -1,4 +1,5 @@
-#![feature(arbitrary_self_types)]
+#![feature(async_await, arbitrary_self_types)]
+#![allow(unused_imports)]
 
 pub mod actor;
 mod mailbox;

@@ -3,14 +3,16 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 
-use futures::future::Future;
+use core::future::Future;
+
+use futures::executor::block_on;
 
 use tokio_sync::{mpsc, oneshot};
 
 use crate::actor::{Actor, Handle, Message};
 use crate::system::{ActorBundle};
 
-type AnyMap = HashMap<TypeId, Arc<Any + Send + Sync>>;
+type AnyMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 pub(crate) trait EnvelopeProxy {
     type Actor: Actor;
@@ -20,7 +22,7 @@ pub(crate) trait EnvelopeProxy {
 
 }
 
-pub(crate) struct Envelope<A: Actor>(Box<EnvelopeProxy<Actor = A>>);
+pub(crate) struct Envelope<A: Actor>(Box<dyn EnvelopeProxy<Actor = A>>);
 
 unsafe impl<A> Send for Envelope<A> where A: Actor {} // This is safe because the Actor isn't really there.
 
@@ -35,10 +37,10 @@ where
 }
 
 pub(crate) enum PeekGrab<M: Message> {
-    Peek(Box<Fn(&M) + Send + Sync + 'static>),
-    Alter(Box<Fn(M) -> M + Send + Sync + 'static>),
-    AlterResponse(Box<Fn(M::Result) -> M::Result + Send + Sync + 'static>),
-    Grab(Box<Fn(M) -> M::Result + Send + Sync + 'static>),
+    Peek(Box<dyn Fn(&M) + Send + Sync + 'static>),
+    Alter(Box<dyn Fn(M) -> M + Send + Sync + 'static>),
+    AlterResponse(Box<dyn Fn(M::Result) -> M::Result + Send + Sync + 'static>),
+    Grab(Box<dyn Fn(M) -> M::Result + Send + Sync + 'static>),
 }
 
 impl<A, M> EnvelopeProxy for EnvelopeInner<A, M>
@@ -258,13 +260,12 @@ where
         A: Actor + Handle<M>,
         M: Message,
     {
-        let (tx, rx) = oneshot::channel();
-        let env = Envelope::with_reply(msg, tx);
-        let mut tx = self.tx.clone();
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        let env = Envelope::with_reply(msg, reply_tx);
+        let mut request_tx = self.tx.clone();
 
-        return match tx.try_send(env) {
-            Ok(()) => match rx.wait() {
-                // TODO Can we do without the wait() call?
+        return match request_tx.try_send(env) {
+            Ok(()) => match block_on(reply_rx)  {
                 Ok(Some(response)) => Ok(response),
                 Ok(None) => Err(MailboxAskError::MessageDropped),
                 Err(_) => Err(MailboxAskError::CouldNotRecv),

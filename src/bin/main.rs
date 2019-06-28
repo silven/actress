@@ -1,3 +1,5 @@
+#![feature(async_await)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -124,7 +126,7 @@ fn main() {
         }
     }
 
-    sys.spawn_future(lazy(move || {
+    sys.spawn_future(async move {
         std::thread::sleep(Duration::from_secs(1));
         act.grab::<Msg<usize>, _>(|x| x.0 + 1);
 
@@ -144,9 +146,7 @@ fn main() {
                 Err(e) => println!("No reply {:?}", e),
             }
         }
-
-        Ok(())
-    }));
+    });
 
     sys.run_until_completion();
     println!("The counter is: {}", counter.load(Ordering::SeqCst));
