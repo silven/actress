@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc};
+use std::sync::Arc;
 
 use futures::future::lazy;
 
 use std::time::Duration;
 
-use testing_rom::{
+use actress::{
     actor::{Actor, ActorContext, Handle, Message},
     system::System,
 };

@@ -1,4 +1,4 @@
-#![feature(async_await, arbitrary_self_types, weak_counts)]
+#![feature(arbitrary_self_types)]
 
 pub mod actor;
 mod mailbox;

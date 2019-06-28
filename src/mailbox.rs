@@ -1,48 +1,50 @@
-
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex, Weak};
+
 use futures::future::Future;
 
 use tokio_sync::{mpsc, oneshot};
 
-
-use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, Weak};
-
-use crate::actor::{Actor, Message, Handle};
-
+use crate::actor::{Actor, Handle, Message};
 use crate::system::{ActorBundle};
+
+type AnyMap = HashMap<TypeId, Arc<Any + Send + Sync>>;
 
 pub(crate) trait EnvelopeProxy {
     type Actor: Actor;
 
     fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>);
+    fn reject(&mut self);
+
 }
 
 pub(crate) struct Envelope<A: Actor>(Box<EnvelopeProxy<Actor = A>>);
 
-unsafe impl<A> Send for Envelope<A> where A: Actor {}
+unsafe impl<A> Send for Envelope<A> where A: Actor {} // This is safe because the Actor isn't really there.
 
 struct EnvelopeInner<A, M>
-    where
-        M: Message,
-        A: Actor + Handle<M>,
+where
+    M: Message,
+    A: Actor + Handle<M>,
 {
     act: PhantomData<*const A>,
     msg: Option<M>,
-    reply: Option<oneshot::Sender<M::Result>>,
+    reply: Option<oneshot::Sender<Option<M::Result>>>,
 }
 
 pub(crate) enum PeekGrab<M: Message> {
     Peek(Box<Fn(&M) + Send + Sync + 'static>),
     Alter(Box<Fn(M) -> M + Send + Sync + 'static>),
+    AlterResponse(Box<Fn(M::Result) -> M::Result + Send + Sync + 'static>),
     Grab(Box<Fn(M) -> M::Result + Send + Sync + 'static>),
 }
 
 impl<A, M> EnvelopeProxy for EnvelopeInner<A, M>
-    where
-        A: Actor + Handle<M>,
-        M: Message,
+where
+    A: Actor + Handle<M>,
+    M: Message,
 {
     type Actor = A;
 
@@ -61,7 +63,17 @@ impl<A, M> EnvelopeProxy for EnvelopeInner<A, M>
                 PeekGrab::Grab(ref grab) => {
                     let result = grab(msg);
                     if let Some(tx) = self.reply.take() {
-                        tx.send(result); // TODO; What to do if we can't send a reply?
+                        tx.send(Some(result)); // TODO; What to do if we can't send a reply?
+                    }
+                    return;
+                }
+                PeekGrab::AlterResponse(ref alt_response) => {
+                    let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
+
+                    let altered = alt_response(result);
+
+                    if let Some(tx) = self.reply.take() {
+                        tx.send(Some(altered)); // TODO; What to do if we can't send a reply?
                     }
                     return;
                 }
@@ -71,19 +83,25 @@ impl<A, M> EnvelopeProxy for EnvelopeInner<A, M>
         let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
 
         if let Some(tx) = self.reply.take() {
-            tx.send(result); // TODO; What to do if we can't send a reply?
+            tx.send(Some(result)); // TODO; What to do if we can't send a reply?
+        }
+    }
+
+    fn reject(&mut self) {
+        if let Some(tx) = self.reply.take() {
+            tx.send(None); // TODO; What to do if we can't send a reply?
         }
     }
 }
 
 impl<A> Envelope<A>
-    where
-        A: Actor,
+where
+    A: Actor,
 {
     fn new<M>(msg: M) -> Self
-        where
-            A: Handle<M>,
-            M: Message,
+    where
+        A: Handle<M>,
+        M: Message,
     {
         Envelope(Box::new(EnvelopeInner {
             act: PhantomData,
@@ -92,10 +110,10 @@ impl<A> Envelope<A>
         }))
     }
 
-    fn with_reply<M>(msg: M, reply_to: oneshot::Sender<M::Result>) -> Self
-        where
-            A: Handle<M>,
-            M: Message,
+    fn with_reply<M>(msg: M, reply_to: oneshot::Sender<Option<M::Result>>) -> Self
+    where
+        A: Handle<M>,
+        M: Message,
     {
         Envelope(Box::new(EnvelopeInner {
             act: PhantomData,
@@ -106,22 +124,23 @@ impl<A> Envelope<A>
 }
 
 impl<A> EnvelopeProxy for Envelope<A>
-    where
-        A: Actor,
+where
+    A: Actor,
 {
     type Actor = A;
 
     fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>) {
         self.0.accept(actor);
     }
+
+    fn reject(&mut self) {
+        self.0.reject();
+    }
 }
 
-
-type AnyMap = HashMap<TypeId, Arc<Any + Send + Sync>>;
-
 pub struct Mailbox<A>
-    where
-        A: Actor,
+where
+    A: Actor,
 {
     tx: mpsc::UnboundedSender<Envelope<A>>,
     listeners: Weak<Mutex<AnyMap>>,
@@ -136,13 +155,17 @@ pub enum MailboxSendError {
 pub enum MailboxAskError {
     CouldNotSend,
     CouldNotRecv,
+    MessageDropped,
 }
 
 impl<A> Mailbox<A>
-    where
-        A: Actor,
+where
+    A: Actor,
 {
-    pub(crate) fn new(inbox: mpsc::UnboundedSender<Envelope<A>>, listeners: Weak<Mutex<AnyMap>>) -> Self {
+    pub(crate) fn new(
+        inbox: mpsc::UnboundedSender<Envelope<A>>,
+        listeners: Weak<Mutex<AnyMap>>,
+    ) -> Self {
         Mailbox {
             tx: inbox,
             listeners: listeners,
@@ -150,7 +173,7 @@ impl<A> Mailbox<A>
     }
 
     // Can't use Clone for &Mailbox due to blanket impl
-    pub(crate) fn copy(&self) -> Self {
+    pub fn copy(&self) -> Self {
         Mailbox {
             tx: self.tx.clone(),
             listeners: self.listeners.clone(),
@@ -158,9 +181,9 @@ impl<A> Mailbox<A>
     }
 
     pub fn send<M>(&self, msg: M) -> Result<(), MailboxSendError>
-        where
-            A: Actor + Handle<M>,
-            M: Message,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
     {
         let env = Envelope::new(msg);
         let mut tx = self.tx.clone();
@@ -171,36 +194,45 @@ impl<A> Mailbox<A>
     }
 
     pub fn peek<M, F>(&self, handler: F)
-        where
-            A: Actor + Handle<M>,
-            M: Message,
-            F: Fn(&M) + Send + Sync + 'static,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
+        F: Fn(&M) + Send + Sync + 'static,
     {
         self.add_listener(PeekGrab::Peek(Box::new(handler)));
     }
 
     pub fn alter<M, F>(&self, handler: F)
-        where
-            A: Actor + Handle<M>,
-            M: Message,
-            F: Fn(M) -> M + Send + Sync + 'static,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
+        F: Fn(M) -> M + Send + Sync + 'static,
     {
         self.add_listener(PeekGrab::Alter(Box::new(handler)));
     }
 
-    pub fn grab<M, F>(&self, handler: F)
+    pub fn alter_response<M, F>(&self, handler: F)
         where
             A: Actor + Handle<M>,
             M: Message,
-            F: Fn(M) -> M::Result + Send + Sync + 'static,
+            F: Fn(M::Result) -> M::Result + Send + Sync + 'static,
+    {
+        self.add_listener(PeekGrab::AlterResponse(Box::new(handler)));
+    }
+
+    pub fn grab<M, F>(&self, handler: F)
+    where
+        A: Actor + Handle<M>,
+        M: Message,
+        F: Fn(M) -> M::Result + Send + Sync + 'static,
     {
         self.add_listener(PeekGrab::Grab(Box::new(handler)));
     }
 
     pub fn clear_listener<M>(&self)
-        where
-            A: Actor + Handle<M>,
-            M: Message,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
     {
         if let Some(arc) = self.listeners.upgrade() {
             if let Ok(mut map) = arc.lock() {
@@ -210,9 +242,9 @@ impl<A> Mailbox<A>
     }
 
     fn add_listener<M>(&self, listener: PeekGrab<M>)
-        where
-            A: Actor + Handle<M>,
-            M: Message,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
     {
         if let Some(arc) = self.listeners.upgrade() {
             if let Ok(mut map) = arc.lock() {
@@ -222,9 +254,9 @@ impl<A> Mailbox<A>
     }
 
     pub fn ask<M>(&self, msg: M) -> Result<M::Result, MailboxAskError>
-        where
-            A: Actor + Handle<M>,
-            M: Message,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
     {
         let (tx, rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, tx);
@@ -233,7 +265,8 @@ impl<A> Mailbox<A>
         return match tx.try_send(env) {
             Ok(()) => match rx.wait() {
                 // TODO Can we do without the wait() call?
-                Ok(response) => Ok(response),
+                Ok(Some(response)) => Ok(response),
+                Ok(None) => Err(MailboxAskError::MessageDropped),
                 Err(_) => Err(MailboxAskError::CouldNotRecv),
             },
             Err(_) => Err(MailboxAskError::CouldNotSend),
