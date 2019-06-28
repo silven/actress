@@ -13,9 +13,7 @@ struct Dummy {
 
 impl Dummy {
     fn new() -> Self {
-        Dummy {
-            count: 0,
-        }
+        Dummy { count: 0 }
     }
 }
 
@@ -30,7 +28,7 @@ enum Msg {
 #[derive(Debug)]
 enum Response {
     ComputeResponse,
-    Response(u64)
+    Response(u64),
 }
 
 impl Message for Msg {
@@ -44,10 +42,8 @@ impl Handle<Msg> for Dummy {
                 std::thread::sleep(Duration::from_millis(value));
                 self.count += value;
                 Response::ComputeResponse
-            },
-            Msg::Respond => {
-                Response::Response(self.count)
-            },
+            }
+            Msg::Respond => Response::Response(self.count),
         }
     }
 }

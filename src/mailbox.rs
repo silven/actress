@@ -10,7 +10,7 @@ use futures::executor::block_on;
 use tokio_sync::{mpsc, oneshot};
 
 use crate::actor::{Actor, Handle, Message};
-use crate::system::{ActorBundle};
+use crate::system::ActorBundle;
 
 type AnyMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
@@ -19,7 +19,6 @@ pub(crate) trait EnvelopeProxy {
 
     fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>);
     fn reject(&mut self);
-
 }
 
 pub(crate) struct Envelope<A: Actor>(Box<dyn EnvelopeProxy<Actor = A>>);
@@ -70,7 +69,8 @@ where
                     return;
                 }
                 PeekGrab::AlterResponse(ref alt_response) => {
-                    let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
+                    let result =
+                        <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
 
                     let altered = alt_response(result);
 
@@ -214,10 +214,10 @@ where
     }
 
     pub fn alter_response<M, F>(&self, handler: F)
-        where
-            A: Actor + Handle<M>,
-            M: Message,
-            F: Fn(M::Result) -> M::Result + Send + Sync + 'static,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
+        F: Fn(M::Result) -> M::Result + Send + Sync + 'static,
     {
         self.add_listener(PeekGrab::AlterResponse(Box::new(handler)));
     }
@@ -265,7 +265,7 @@ where
         let mut request_tx = self.tx.clone();
 
         return match request_tx.try_send(env) {
-            Ok(()) => match block_on(reply_rx)  {
+            Ok(()) => match block_on(reply_rx) {
                 Ok(Some(response)) => Ok(response),
                 Ok(None) => Err(MailboxAskError::MessageDropped),
                 Err(_) => Err(MailboxAskError::CouldNotRecv),

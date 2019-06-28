@@ -2,8 +2,8 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use futures::future::Future;
 use futures::executor::block_on;
+use futures::future::Future;
 use futures::stream::StreamExt;
 
 use futures::Poll;
@@ -53,14 +53,20 @@ where
 
                         // Only blocks a finite amount of time, since the channel is closed.
                         let backlog: Vec<_> = block_on(rx.collect());
-                        println!("Stopping actor {} with {} messages left in backlog", self.inner.id(), backlog.len());
+                        println!(
+                            "Stopping actor {} with {} messages left in backlog",
+                            self.inner.id(),
+                            backlog.len()
+                        );
 
                         // Bikeshedding name of this mechanism
                         match self.actor.backlog_policy() {
-                            BacklogPolicy::Reject => backlog.into_iter()
-                                .for_each(|mut m| m.reject()),
-                            BacklogPolicy::Flush => backlog.into_iter()
-                                .for_each(|mut m| m.accept(&mut self)),
+                            BacklogPolicy::Reject => {
+                                backlog.into_iter().for_each(|mut m| m.reject())
+                            }
+                            BacklogPolicy::Flush => {
+                                backlog.into_iter().for_each(|mut m| m.accept(&mut self))
+                            }
                         };
 
                         return Poll::Ready(());
@@ -80,7 +86,7 @@ pub(crate) struct ActorBundle<A: Actor> {
 
     recv: Option<mpsc::UnboundedReceiver<Envelope<A>>>,
     listeners: Arc<Mutex<AnyArcMap>>, // Mailboxes have Weak-pointers to this field
-    //children: Vec<Weak<dyn ActorContainer>>,
+                                      //children: Vec<Weak<dyn ActorContainer>>,
 }
 
 impl<A> ActorBundle<A>
@@ -144,10 +150,7 @@ impl SystemContext {
         None
     }
 
-    pub(crate) fn spawn_future<F: Future<Output=()> + Send + 'static>(
-        &self,
-        fut: F,
-    ) -> bool {
+    pub(crate) fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) -> bool {
         self.spawner.spawn(fut).is_ok()
     }
 
@@ -186,11 +189,14 @@ impl Message for SystemMessage {
     type Result = ();
 }
 
-impl<A> Handle<SystemMessage> for A where A: Actor {
+impl<A> Handle<SystemMessage> for A
+where
+    A: Actor,
+{
     fn accept(&mut self, msg: SystemMessage, cx: &mut ActorContext) {
         println!("Actor {} handling system message.", cx.id());
         match msg {
-            SystemMessage::Stop => { cx.stop() },
+            SystemMessage::Stop => cx.stop(),
         }
     }
 }
@@ -201,8 +207,10 @@ trait AcceptsSystemMessage: mopa::Any + Send + 'static {
 }
 mopafy!(AcceptsSystemMessage);
 
-
-impl<A> AcceptsSystemMessage for Mailbox<A> where A: Actor {
+impl<A> AcceptsSystemMessage for Mailbox<A>
+where
+    A: Actor,
+{
     fn system_message(&self, msg: SystemMessage) {
         self.send(msg);
     }
@@ -243,11 +251,11 @@ impl System {
         println!("Waiting for system to stop...");
 
         match self.context.registry.lock() {
-            Ok(registry ) => {
+            Ok(registry) => {
                 for service in registry.values() {
                     service.system_message(SystemMessage::Stop);
                 }
-            },
+            }
             Err(_) => panic!("Could not terminate services..."),
         }
 
@@ -255,7 +263,7 @@ impl System {
         println!("Done with system?");
     }
 
-    pub fn spawn_future<F: Future<Output=()> + Send + 'static>(&self, fut: F) {
+    pub fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) {
         self.context.spawn_future(fut);
     }
 }

@@ -21,7 +21,9 @@ pub trait Actor: Send + 'static {
     fn stopping(&mut self) {}
     fn stopped(&mut self) {}
 
-    fn backlog_policy(&self) -> BacklogPolicy { BacklogPolicy::Flush }
+    fn backlog_policy(&self) -> BacklogPolicy {
+        BacklogPolicy::Flush
+    }
 }
 
 #[derive(PartialEq)]
