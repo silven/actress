@@ -68,13 +68,11 @@ where
                                 backlog.into_iter().for_each(|mut m| m.accept(&mut self))
                             }
                         };
-
                         return Poll::Ready(());
                     }
                 }
-
                 Poll::Ready(None) => return Poll::Ready(()),
-                _ => return Poll::Pending,
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
@@ -109,7 +107,7 @@ where
 
 #[derive(Clone)]
 pub(crate) struct SystemContext {
-    spawner: Sender,
+    pub(crate) spawner: Sender,
     registry: Arc<Mutex<HashMap<String, Box<dyn AcceptsSystemMessage>>>>,
     id_counter: usize,
 }
@@ -192,6 +190,8 @@ impl<A> Handle<SystemMessage> for A
 where
     A: Actor,
 {
+    type Response = ();
+
     fn accept(&mut self, msg: SystemMessage, cx: &mut ActorContext) {
         println!("Actor {} handling system message.", cx.id());
         match msg {

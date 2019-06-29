@@ -9,7 +9,7 @@ use futures::executor::block_on;
 
 use tokio_sync::{mpsc, oneshot};
 
-use crate::actor::{Actor, Handle, Message};
+use crate::actor::{Actor, Handle, Message, Response};
 use crate::system::ActorBundle;
 
 type AnyMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
@@ -39,7 +39,7 @@ where
 pub(crate) enum PeekGrab<M: Message> {
     Peek(Box<dyn Fn(&M) + Send + Sync + 'static>),
     Alter(Box<dyn Fn(M) -> M + Send + Sync + 'static>),
-    AlterResponse(Box<dyn Fn(M::Result) -> M::Result + Send + Sync + 'static>),
+    //AlterResponse(Box<dyn Fn(M::Result) -> M::Result + Send + Sync + 'static>),
     Grab(Box<dyn Fn(M) -> M::Result + Send + Sync + 'static>),
 }
 
@@ -69,6 +69,7 @@ where
                     }
                     return;
                 }
+                /*
                 PeekGrab::AlterResponse(ref alt_response) => {
                     let result =
                         <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
@@ -80,14 +81,18 @@ where
 
                     return;
                 }
+                */
             }
         }
 
         let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
+        result.handle(actor.inner.system.spawner.clone(), self.reply.take());
 
+        /*
         if let Some(tx) = self.reply.take() {
             tx.send(Some(result));
         }
+        */
     }
 
     fn reject(&mut self) {
@@ -214,6 +219,7 @@ where
         self.add_listener(PeekGrab::Alter(Box::new(handler)));
     }
 
+    /*
     pub fn alter_response<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -222,6 +228,7 @@ where
     {
         self.add_listener(PeekGrab::AlterResponse(Box::new(handler)));
     }
+    */
 
     pub fn grab<M, F>(&self, handler: F)
     where

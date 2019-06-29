@@ -1,12 +1,74 @@
 use crate::mailbox::Mailbox;
 use crate::system::SystemContext;
 
+use tokio_sync::oneshot;
+use tokio_threadpool::Sender;
+use futures::future::{FutureObj};
+
 pub trait Message: 'static {
     type Result;
 }
 
-pub trait Handle<M: Message> {
-    fn accept(&mut self, msg: M, cx: &mut ActorContext) -> M::Result;
+pub trait Response<M: Message> {
+    fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>);
+}
+
+impl<M: Message> Response<M> for std::pin::Pin<Box<dyn std::future::Future<Output=M::Result> + Send>>
+where
+    M::Result: Send,
+{
+    fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+        println!("This is the future!");
+
+        spawner.spawn(async move {
+            let result: <M as Message>::Result = self.await;
+            if let Some(tx) = reply_to {
+                tx.send(Some(result));
+            }
+        });
+    }
+}
+
+macro_rules! simple_result {
+    ($type:ty) => {
+        impl<M: Message> Response<M> for $type
+        where
+            M: Message<Result = $type>,
+        {
+            fn handle(self, _: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+                if let Some(tx) = reply_to {
+                    tx.send(Some(self));
+                }
+            }
+        }
+    };
+}
+
+simple_result!(());
+simple_result!(u64);
+
+/*
+impl<M, T> Response<M> for T
+    where
+        M: Message<Result=Self>
+{
+    fn handle(self, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+        if let Some(tx) = reply_to {
+            tx.send(Some(self));
+        }
+    }
+}
+*/
+
+
+pub trait Handle<M>
+    where
+        Self: Actor,
+        M: Message,
+{
+    type Response: Response<M>;
+
+    fn accept(&mut self, msg: M, cx: &mut ActorContext) -> Self::Response;
 }
 
 pub enum BacklogPolicy {
@@ -36,7 +98,7 @@ pub(crate) enum ActorState {
 pub struct ActorContext {
     id: usize,
     state: ActorState,
-    system: SystemContext,
+    pub(crate) system: SystemContext,
 }
 
 impl ActorContext {
