@@ -132,7 +132,6 @@ impl SystemContext {
         if let Ok(mut registry) = self.registry.lock() {
             registry.insert(name.to_string(), Box::new(mailbox.copy()));
         }
-
         mailbox
     }
 
@@ -218,7 +217,10 @@ where
 
 impl System {
     pub fn new() -> Self {
-        let pool = ThreadPool::new();
+        let pool = tokio_threadpool::Builder::new()
+             .pool_size(8)
+            .build();
+
         let spawner = pool.sender().clone();
         System {
             threadpool: pool,

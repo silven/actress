@@ -23,7 +23,8 @@ pub(crate) trait EnvelopeProxy {
 
 pub(crate) struct Envelope<A: Actor>(Box<dyn EnvelopeProxy<Actor = A>>);
 
-unsafe impl<A> Send for Envelope<A> where A: Actor {} // This is safe because the Actor isn't really there.
+// This is safe because the Actor isn't really there.
+unsafe impl<A> Send for Envelope<A> where A: Actor {}
 
 struct EnvelopeInner<A, M>
 where
@@ -49,7 +50,7 @@ where
 {
     type Actor = A;
 
-    fn accept(&mut self, actor: &mut ActorBundle<A>) {
+    fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>) {
         let mut msg = self.msg.take().unwrap();
         let listener = actor.get_listener::<M>();
 
@@ -64,7 +65,7 @@ where
                 PeekGrab::Grab(ref grab) => {
                     let result = grab(msg);
                     if let Some(tx) = self.reply.take() {
-                        tx.send(Some(result)); // TODO; What to do if we can't send a reply?
+                        tx.send(Some(result));
                     }
                     return;
                 }
@@ -73,10 +74,10 @@ where
                         <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
 
                     let altered = alt_response(result);
-
                     if let Some(tx) = self.reply.take() {
-                        tx.send(Some(altered)); // TODO; What to do if we can't send a reply?
+                        tx.send(Some(altered));
                     }
+
                     return;
                 }
             }
@@ -85,7 +86,7 @@ where
         let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
 
         if let Some(tx) = self.reply.take() {
-            tx.send(Some(result)); // TODO; What to do if we can't send a reply?
+            tx.send(Some(result));
         }
     }
 
@@ -260,12 +261,31 @@ where
         A: Actor + Handle<M>,
         M: Message,
     {
-        let (reply_tx, mut reply_rx) = oneshot::channel();
+        let (reply_tx, reply_rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, reply_tx);
         let mut request_tx = self.tx.clone();
 
         return match request_tx.try_send(env) {
             Ok(()) => match block_on(reply_rx) {
+                Ok(Some(response)) => Ok(response),
+                Ok(None) => Err(MailboxAskError::MessageDropped),
+                Err(_) => Err(MailboxAskError::CouldNotRecv),
+            },
+            Err(_) => Err(MailboxAskError::CouldNotSend),
+        };
+    }
+
+    pub async fn ask_async<M>(&self, msg: M) -> Result<M::Result, MailboxAskError>
+        where
+            A: Actor + Handle<M>,
+            M: Message,
+    {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let env = Envelope::with_reply(msg, reply_tx);
+        let mut request_tx = self.tx.clone();
+
+        return match request_tx.try_send(env) {
+            Ok(()) => match reply_rx.await {
                 Ok(Some(response)) => Ok(response),
                 Ok(None) => Err(MailboxAskError::MessageDropped),
                 Err(_) => Err(MailboxAskError::CouldNotRecv),
