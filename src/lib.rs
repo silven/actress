@@ -1,11 +1,13 @@
-#![feature(async_await, arbitrary_self_types)]
+#![feature(async_await, arbitrary_self_types, specialization)]
 #![allow(unused_imports)]
 
-pub mod actor;
+mod actor;
 mod mailbox;
-pub mod system;
+mod response;
+mod system;
 
 pub use crate::{
     actor::{Actor, ActorContext, Handle, Message},
     system::System,
+    response::{AsyncResponse, SyncResponse, NoResponse},
 };

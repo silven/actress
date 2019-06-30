@@ -217,9 +217,7 @@ where
 
 impl System {
     pub fn new() -> Self {
-        let pool = tokio_threadpool::Builder::new()
-             .pool_size(8)
-            .build();
+        let pool = tokio_threadpool::Builder::new().pool_size(8).build();
 
         let spawner = pool.sender().clone();
         System {

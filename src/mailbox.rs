@@ -2,15 +2,15 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
-
-use core::future::Future;
+use std::future::Future;
 
 use futures::executor::block_on;
 
 use tokio_sync::{mpsc, oneshot};
 
-use crate::actor::{Actor, Handle, Message, Response};
+use crate::actor::{Actor, Handle, Message};
 use crate::system::ActorBundle;
+use crate::response::Response;
 
 type AnyMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
@@ -68,20 +68,19 @@ where
                         tx.send(Some(result));
                     }
                     return;
-                }
-                /*
-                PeekGrab::AlterResponse(ref alt_response) => {
-                    let result =
-                        <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
+                } /*
+                  PeekGrab::AlterResponse(ref alt_response) => {
+                      let result =
+                          <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
 
-                    let altered = alt_response(result);
-                    if let Some(tx) = self.reply.take() {
-                        tx.send(Some(altered));
-                    }
+                      let altered = alt_response(result);
+                      if let Some(tx) = self.reply.take() {
+                          tx.send(Some(altered));
+                      }
 
-                    return;
-                }
-                */
+                      return;
+                  }
+                  */
             }
         }
 
@@ -283,9 +282,9 @@ where
     }
 
     pub async fn ask_async<M>(&self, msg: M) -> Result<M::Result, MailboxAskError>
-        where
-            A: Actor + Handle<M>,
-            M: Message,
+    where
+        A: Actor + Handle<M>,
+        M: Message,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, reply_tx);

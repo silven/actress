@@ -3,13 +3,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use futures::future::lazy;
-
 use std::time::Duration;
 
 use actress::{
-    actor::{Actor, ActorContext, Handle, Message},
-    system::System,
+    SyncResponse,
+    Actor, ActorContext, Handle, Message,
+    System,
 };
 
 struct Dummy {
@@ -47,7 +46,9 @@ impl Message for Msg<String> {
 }
 
 impl Handle<Msg<String>> for Dummy {
-    fn accept(&mut self, msg: Msg<String>, cx: &mut ActorContext) -> String {
+    type Response = SyncResponse<Msg<String>>;
+
+    fn accept(&mut self, msg: Msg<String>, cx: &mut ActorContext) -> Self::Response {
         self.str_count += 1;
         println!(
             "I got a string message, {}, {}/{}",
@@ -77,7 +78,7 @@ impl Handle<Msg<String>> for Dummy {
             }
         }
 
-        return msg.0;
+        return SyncResponse(msg.0);
     }
 }
 
@@ -86,7 +87,9 @@ impl Message for Msg<usize> {
 }
 
 impl Handle<Msg<usize>> for Dummy {
-    fn accept(&mut self, msg: Msg<usize>, cx: &mut ActorContext) -> usize {
+    type Response = SyncResponse<Msg<usize>>;
+
+    fn accept(&mut self, msg: Msg<usize>, cx: &mut ActorContext) -> Self::Response {
         self.int_count += 1;
         println!(
             "I got a numerical message, {} {}/{}",
@@ -96,7 +99,7 @@ impl Handle<Msg<usize>> for Dummy {
             println!("I am stopping now..");
             cx.stop();
         }
-        return msg.0;
+        return SyncResponse(msg.0);
     }
 }
 
