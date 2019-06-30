@@ -4,7 +4,6 @@ use tokio_sync::oneshot;
 use tokio_threadpool::Sender;
 use std::pin::Pin;
 use std::future::Future;
-use std::marker::PhantomData;
 
 pub trait Response<M: Message> {
     fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>);
@@ -12,26 +11,10 @@ pub trait Response<M: Message> {
 
 pub struct SyncResponse<M:Message>(pub M::Result);
 pub struct AsyncResponse<M:Message>(pub Pin<Box<dyn Future<Output = M::Result> + Send>>);
-pub struct NoResponse<M: Message>(PhantomData<M>);
 
-impl<M: Message> From<Pin<Box<dyn Future<Output = M::Result> + Send>>> for AsyncResponse<M> {
-    fn from(value: Pin<Box<dyn Future<Output = M::Result> + Send>>) -> AsyncResponse<M> {
-        AsyncResponse(value)
-    }
-}
-
-impl<M: Message> From<()> for NoResponse<M> {
-    fn from(value: ()) -> NoResponse<M> {
-        NoResponse(PhantomData)
-    }
-}
-
-impl<M> Response<M> for NoResponse<M>
-    where
-        M: Message,
-{
-    fn handle(self, _: Sender, _: Option<oneshot::Sender<Option<M::Result>>>) {
-        //...
+impl<M: Message> AsyncResponse<M> {
+    pub fn from_future<F: Future<Output=M::Result> + Send + 'static>(fut: F) -> Self {
+        AsyncResponse(Box::pin(fut))
     }
 }
 

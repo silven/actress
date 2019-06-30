@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actress::{
-    SyncResponse,
     Actor, ActorContext, Handle, Message,
     System,
 };
@@ -46,7 +45,7 @@ impl Message for Msg<String> {
 }
 
 impl Handle<Msg<String>> for Dummy {
-    type Response = SyncResponse<Msg<String>>;
+    type Response = String;
 
     fn accept(&mut self, msg: Msg<String>, cx: &mut ActorContext) -> Self::Response {
         self.str_count += 1;
@@ -78,7 +77,7 @@ impl Handle<Msg<String>> for Dummy {
             }
         }
 
-        return SyncResponse(msg.0);
+        msg.0
     }
 }
 
@@ -87,7 +86,7 @@ impl Message for Msg<usize> {
 }
 
 impl Handle<Msg<usize>> for Dummy {
-    type Response = SyncResponse<Msg<usize>>;
+    type Response = usize;
 
     fn accept(&mut self, msg: Msg<usize>, cx: &mut ActorContext) -> Self::Response {
         self.int_count += 1;
@@ -99,7 +98,7 @@ impl Handle<Msg<usize>> for Dummy {
             println!("I am stopping now..");
             cx.stop();
         }
-        return SyncResponse(msg.0);
+        msg.0
     }
 }
 

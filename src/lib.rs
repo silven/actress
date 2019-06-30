@@ -9,5 +9,5 @@ mod system;
 pub use crate::{
     actor::{Actor, ActorContext, Handle, Message},
     system::System,
-    response::{AsyncResponse, SyncResponse, NoResponse},
+    response::{AsyncResponse, SyncResponse},
 };

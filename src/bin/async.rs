@@ -39,13 +39,13 @@ impl Handle<Msg> for Dummy {
 
         let slave = cx.spawn_actor(Dummy::new()).unwrap();
 
-        AsyncResponse(Box::pin(async move {
+        AsyncResponse::from_future(async move {
             if msg.0 > 0 {
                 let r = slave.ask_async(Msg(msg.0 - 1)).await;
                 println!("Got a result {:?}", r);
             }
             msg.0
-        }))
+        })
     }
 }
 
