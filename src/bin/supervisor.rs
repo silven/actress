@@ -6,7 +6,11 @@ use actress::{Mailbox, Actor, ActorContext, Handle, Message, System, Supervisor,
 use std::time::Duration;
 
 
-impl Actor for FibberSup {}
+impl Actor for FibberSup {
+    fn stopped(&mut self) {
+        println!("Oh noes, supervisor stopped?");
+    }
+}
 
 struct FibberSup {
     count: u64,
@@ -37,7 +41,7 @@ impl Handle<FibRequest> for FibberSup {
 
     fn accept(&mut self, msg: FibRequest, cx: &mut ActorContext<Self>) {
         let slave = cx.spawn_child(FibberWorker { master: cx.mailbox() }).unwrap();
-
+        cx.stop();
         slave.send(msg);
     }
 }
@@ -46,7 +50,7 @@ struct FibberWorker { master: Mailbox<FibberSup> }
 
 impl Actor for FibberWorker {
     fn stopped(&mut self) {
-        println!("Oh noes, worked stopped?");
+        println!("Oh noes, worker stopped?");
     }
 }
 
@@ -54,10 +58,11 @@ impl Handle<FibRequest> for FibberWorker {
     type Response = ();
     fn accept(&mut self, msg: FibRequest, cx: &mut ActorContext<Self>) {
         // This is hard work!
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(2));
         // Send reply
         if msg.0 % 2 == 0 {
-            panic!("Oh noes, this is a bad number..");
+            //cx.stop();
+            //panic!("Oh noes, this is a bad number..");
         }
         self.master.send(FibReply(msg.0));
     }
@@ -71,7 +76,7 @@ impl Handle<FibReply> for FibberSup {
 }
 
 impl Supervisor<FibberWorker> for FibberSup {
-    fn worker_stopped(&mut self, worker_id: usize, info: PanicData) {
+    fn worker_stopped(&mut self, worker_id: usize, info: Option<PanicData>) {
         println!("Oh no! Worker with id {} stopped! {:?}", worker_id, info);
     }
 }

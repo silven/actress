@@ -1,5 +1,5 @@
 use crate::mailbox::Mailbox;
-use crate::system::{SystemContext, ActorBundle, Supervises};
+use crate::system::{SystemContext, ActorBundle, Supervises, ChildGuard};
 
 use futures::future::FutureObj;
 use std::future::Future;
@@ -41,6 +41,8 @@ pub trait Actor: Sized + Send + 'static {
     fn stopping(&mut self) {}
     fn stopped(&mut self) {}
 
+    fn supervisor_stopped(&mut self, cx: &mut ActorContext<Self>) { cx.stop(); }
+
     fn backlog_policy(&self) -> BacklogPolicy {
         BacklogPolicy::Flush
     }
@@ -58,6 +60,7 @@ pub struct ActorContext<A> where A: Actor {
     state: ActorState,
     mailbox: Mailbox<A>,
     pub(crate) system: SystemContext,
+    children: crate::system::ChildGuard<A>,
 }
 
 impl<Me> ActorContext<Me> where Me: Actor {
@@ -67,6 +70,7 @@ impl<Me> ActorContext<Me> where Me: Actor {
             state: ActorState::Started,
             mailbox: mailbox,
             system: system,
+            children: ChildGuard::new(),
         }
     }
 
@@ -98,7 +102,10 @@ impl<Me> ActorContext<Me> where Me: Actor {
             Me: Supervisor<W>,
     {
         match self.system.spawn_actor(actor, Some(Box::new(self.mailbox()))) {
-            Ok(mailbox) => Some(mailbox),
+            Ok(mailbox) => {
+                self.children.push(mailbox.copy());
+                Some(mailbox)
+            },
             Err(_) => None,
         }
     }

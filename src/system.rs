@@ -12,6 +12,8 @@ use tokio_sync::mpsc;
 
 use tokio_threadpool::{Sender, ThreadPool, Worker};
 
+use crossbeam::atomic::AtomicCell;
+
 use mopa;
 use mopa::mopafy;
 
@@ -22,6 +24,9 @@ use std::task::Context;
 use crate::actor::ActorState::Stopping;
 use std::marker::PhantomData;
 use std::panic::PanicInfo;
+use std::rc::Rc;
+use std::cell::Cell;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
@@ -52,8 +57,8 @@ impl From<&std::panic::PanicInfo<'_>> for PanicData {
     }
 }
 
-struct HookGuard(Option<Box<dyn Fn(&PanicInfo) + Sync + Send + 'static>>);
-impl Drop for HookGuard {
+struct PanicHookGuard(Option<Box<dyn Fn(&PanicInfo) + Sync + Send + 'static>>);
+impl Drop for PanicHookGuard {
     fn drop(&mut self) {
         // Never none
         std::panic::set_hook(self.0.take().unwrap());
@@ -70,17 +75,18 @@ where
     type Output = ();
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
-        // Reset the hook
-        let _hook_guard = HookGuard(Some(std::panic::take_hook()));
+        // Reset the hook after we're done
+        let _hook_guard = PanicHookGuard(Some(std::panic::take_hook()));
 
-        if let Some(ref sup) = self.supervisor {
-            let sup_inner = sup._copy_mailbox();
-            let my_id = self.inner.id();
-
-            std::panic::set_hook(Box::new(move |info| {
-                sup_inner.notify_worker_stopped(my_id, From::from(info));
-            }));
-        }
+        let sup_guard = self.supervisor.guard();
+        let my_id = self.inner.id();
+        std::panic::set_hook(Box::new(move |info| {
+            println!("Inside panic hook!");
+            if let Some(sup) = sup_guard.swap(None) {
+                println!("Notifying sup about worker crash!");
+                sup.notify_worker_stopped(my_id, Some(From::from(info)));
+            };
+        }));
 
         // TODO: this loop shouldn't have to be here?
         loop {
@@ -98,19 +104,14 @@ where
                     match process_result {
                         Ok(()) => { /* all is well */},
                         Err(_) => {
-                            Actor::stopped(&mut self.actor);
+                            self.close_and_stop();
                             return Poll::Ready(());
                         },
                     }
 
                     if self.inner.is_stopping() {
-                        // Is this how we stop?
-                        let mut rx = self.recv.take().unwrap();
-                        rx.close();
-                        Actor::stopping(&mut self.actor);
-
-                        // Only blocks a finite amount of time, since the channel is closed.
-                        let backlog: Vec<_> = block_on(rx.collect());
+                        // Only blocks a finite amount of time, since the rx channel is closed.
+                        let backlog = self.close_and_stop();
                         println!(
                             "Stopping actor {} with {} messages left in backlog",
                             self.inner.id(),
@@ -139,11 +140,60 @@ where
     }
 }
 
+pub(crate) struct ChildGuard<A>(Vec<Box<dyn SupervisedBy<A>>>) where A: Actor;
+
+impl<A> ChildGuard<A> where A: Actor {
+    pub(crate) fn new() -> Self {
+        ChildGuard(Vec::new())
+    }
+
+    pub(crate) fn push<W>(&mut self, mailbox: Mailbox<W>) where A: Supervisor<W>, W: Actor {
+        self.0.push(Box::new(mailbox));
+    }
+}
+
+impl<A> Drop for ChildGuard<A> where A: Actor {
+    fn drop(&mut self) {
+        for child in &self.0 {
+            child.notify_supervisor_stopped();
+        }
+    }
+}
+
+pub(crate) struct SupervisorGuard<A> where A: Actor { id: usize, inner: Arc<AtomicCell<Option<Box<dyn Supervises<A>>>>> }
+
+impl<A> SupervisorGuard<A> where A: Actor {
+    pub(crate) fn new(id: usize, sup: Option<Box<dyn Supervises<A>>>) -> Self {
+        SupervisorGuard { id, inner: Arc::new(AtomicCell::new(sup)) }
+    }
+
+    pub(crate) fn is_some(&self) -> bool {
+        let x = self.inner.swap(None);
+        let some = x.is_some();
+        self.inner.swap(x);
+        some
+    }
+
+    pub(crate) fn guard(&self) -> Arc<AtomicCell<Option<Box<dyn Supervises<A>>>>> {
+        self.inner.clone()
+    }
+}
+
+impl<A> Drop for SupervisorGuard<A> where A: Actor {
+    fn drop(&mut self) {
+        println!("Dropping supervisor guard");
+        if let Some(sup) = self.inner.swap(None) {
+            println!("Notifying supvervisor that worker stopped");
+            sup.notify_worker_stopped(self.id, None);
+        }
+    }
+}
+
 pub(crate) struct ActorBundle<A: Actor> {
     pub(crate) actor: A,
     pub(crate) inner: ActorContext<A>,
 
-    supervisor: Option<Box<dyn Supervises<A>>>,
+    supervisor: SupervisorGuard<A>,
     recv: Option<mpsc::UnboundedReceiver<Envelope<A>>>,
     listeners: Arc<Mutex<AnyArcMap>>, // Mailboxes have Weak-pointers to this field
                                       //children: Vec<Weak<dyn ActorContainer>>,
@@ -164,6 +214,15 @@ where
         } else {
             None
         }
+    }
+
+    fn close_and_stop(&mut self) -> Vec<Envelope<A>> {
+        let mut rx = self.recv.take().unwrap();
+        rx.close();
+        // This means your channel was closed. Do we want to allow for a way to resume?
+        Actor::stopping(&mut self.actor);
+
+        return block_on(rx.collect());
     }
 }
 
@@ -227,11 +286,11 @@ impl SystemContext {
             actor: actor,
             recv: Some(rx),
             listeners: listeners,
-            supervisor: sup,
+            supervisor: SupervisorGuard::new(self.id_counter, sup),
             inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
         };
 
-        // TODO; Figure out a way to move this into the true branch below
+        // TODO; Figure out a way to move this into the true-branch below
         Actor::started(&mut bundle.actor);
 
         match self.spawn_future(bundle) {
@@ -249,12 +308,13 @@ impl Message for StopActor {
 
 impl<A> Handle<StopActor> for A where A: Actor {
     type Response = ();
-    fn accept(&mut self, msg: StopActor, cx: &mut ActorContext<A>) {
+    fn accept(&mut self, _msg: StopActor, cx: &mut ActorContext<A>) {
         cx.stop();
     }
 }
 
-pub(crate) struct WorkerStopped<W: Actor>(usize, PanicData, PhantomData<*const W>);
+/// If there is panic data, there was a crash. If there is none, it stopped gracefully.
+pub(crate) struct WorkerStopped<W: Actor>(usize, Option<PanicData>, PhantomData<*const W>);
 unsafe impl<W> Send for WorkerStopped<W> where W: Actor {}
 
 impl<W> Message for WorkerStopped<W> where W: Actor {
@@ -262,12 +322,11 @@ impl<W> Message for WorkerStopped<W> where W: Actor {
 }
 
 pub trait Supervisor<W>: Actor where W: Actor {
-    fn worker_stopped(&mut self, worker_id: usize, info: PanicData);
+    fn worker_stopped(&mut self, worker_id: usize, info: Option<PanicData>);
 }
 
 pub(crate) trait Supervises<A>: Send + Sync + 'static where A: Actor {
-    fn notify_worker_stopped(&self, worker_id: usize, info: PanicData);
-    fn _copy_mailbox(&self) -> Box<dyn Supervises<A>>;
+    fn notify_worker_stopped(&self, worker_id: usize, info: Option<PanicData>);
 }
 
 impl<S, W> Handle<WorkerStopped<W>> for S where S: Supervisor<W>, W: Actor {
@@ -280,12 +339,31 @@ impl<S, W> Handle<WorkerStopped<W>> for S where S: Supervisor<W>, W: Actor {
 
 impl<S, W> Supervises<W> for Mailbox<S> where S: Supervisor<W> + Handle<WorkerStopped<W>>, W: Actor
 {
-    fn notify_worker_stopped(&self, worker_id: usize, info: PanicData) {
+    fn notify_worker_stopped(&self, worker_id: usize, info: Option<PanicData>) {
         self.send(WorkerStopped(worker_id, info, PhantomData::<*const W>));
     }
+}
 
-    fn _copy_mailbox(&self) -> Box<dyn Supervises<W>> {
-        Box::new(self.copy())
+pub(crate) struct SupervisorStopped;
+impl Message for SupervisorStopped {
+    type Result = ();
+}
+
+pub(crate) trait SupervisedBy<A>: Send + Sync + 'static where A: Actor {
+    fn notify_supervisor_stopped(&self);
+}
+
+impl<A> Handle<SupervisorStopped> for A where A: Actor,  {
+    type Response = ();
+
+    fn accept(&mut self, _msg: SupervisorStopped, cx: &mut ActorContext<A>) {
+        self.supervisor_stopped(cx);
+    }
+}
+
+impl<S, W> SupervisedBy<S> for Mailbox<W> where S: Supervisor<W>, W: Actor + Handle<SupervisorStopped> {
+    fn notify_supervisor_stopped(&self) {
+        self.send(SupervisorStopped);
     }
 }
 
