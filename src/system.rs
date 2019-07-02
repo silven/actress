@@ -10,7 +10,7 @@ use futures::Poll;
 
 use tokio_sync::mpsc;
 
-use tokio_threadpool::{Sender, ThreadPool};
+use tokio_threadpool::{Sender, ThreadPool, Worker};
 
 use mopa;
 use mopa::mopafy;
@@ -19,12 +19,45 @@ use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
 use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox, PeekGrab};
 
 use std::task::Context;
+use crate::actor::ActorState::Stopping;
+use std::marker::PhantomData;
+use std::panic::PanicInfo;
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 pub struct System {
     threadpool: ThreadPool,
     context: SystemContext,
+}
+
+#[derive(Debug)]
+pub struct PanicData {
+    message: Option<String>,
+    file: String,
+    line: u32,
+    column: u32,
+}
+
+impl From<&std::panic::PanicInfo<'_>> for PanicData {
+    fn from(value: &std::panic::PanicInfo) -> Self {
+        // Current impl always returns Some
+        let loc = value.location().unwrap();
+        PanicData {
+            message: value.payload().downcast_ref::<&str>().map(ToString::to_string),
+            file: loc.file().to_owned(),
+            line: loc.line(),
+            column: loc.column(),
+        }
+
+    }
+}
+
+struct HookGuard(Option<Box<dyn Fn(&PanicInfo) + Sync + Send + 'static>>);
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        // Never none
+        std::panic::set_hook(self.0.take().unwrap());
+    }
 }
 
 // TODO: Is this safe? It should be, the actor bundle itself should never move.
@@ -37,19 +70,44 @@ where
     type Output = ();
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+        // Reset the hook
+        let _hook_guard = HookGuard(Some(std::panic::take_hook()));
+
+        if let Some(ref sup) = self.supervisor {
+            let sup_inner = sup._copy_mailbox();
+            let my_id = self.inner.id();
+
+            std::panic::set_hook(Box::new(move |info| {
+                sup_inner.notify_worker_stopped(my_id, From::from(info));
+            }));
+        }
+
         // TODO: this loop shouldn't have to be here?
         loop {
             if self.recv.is_none() {
-                panic!("Poll called after channel closed!");
+                panic!("Poll called after channel closed! This should never happen!");
             }
 
             match self.recv.as_mut().unwrap().poll_recv(cx) {
                 Poll::Ready(Some(mut msg)) => {
-                    msg.accept(&mut self);
+                    // TODO: Is this really safe?
+                    let process_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        msg.accept(&mut self)
+                    }));
+
+                    match process_result {
+                        Ok(()) => { /* all is well */},
+                        Err(_) => {
+                            Actor::stopped(&mut self.actor);
+                            return Poll::Ready(());
+                        },
+                    }
+
                     if self.inner.is_stopping() {
                         // Is this how we stop?
                         let mut rx = self.recv.take().unwrap();
                         rx.close();
+                        Actor::stopping(&mut self.actor);
 
                         // Only blocks a finite amount of time, since the channel is closed.
                         let backlog: Vec<_> = block_on(rx.collect());
@@ -68,20 +126,24 @@ where
                                 backlog.into_iter().for_each(|mut m| m.accept(&mut self))
                             }
                         };
-                        return Poll::Ready(());
+                        break;
                     }
                 }
-                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Ready(None) => break,
                 Poll::Pending => return Poll::Pending,
             }
         }
+
+        Actor::stopped(&mut self.actor);
+        return Poll::Ready(());
     }
 }
 
 pub(crate) struct ActorBundle<A: Actor> {
     pub(crate) actor: A,
-    pub(crate) inner: ActorContext,
+    pub(crate) inner: ActorContext<A>,
 
+    supervisor: Option<Box<dyn Supervises<A>>>,
     recv: Option<mpsc::UnboundedReceiver<Envelope<A>>>,
     listeners: Arc<Mutex<AnyArcMap>>, // Mailboxes have Weak-pointers to this field
                                       //children: Vec<Weak<dyn ActorContainer>>,
@@ -108,7 +170,7 @@ where
 #[derive(Clone)]
 pub(crate) struct SystemContext {
     pub(crate) spawner: Sender,
-    registry: Arc<Mutex<HashMap<String, Box<dyn AcceptsSystemMessage>>>>,
+    registry: Arc<Mutex<HashMap<String, Box<dyn StoppableActor>>>>,
     id_counter: usize,
 }
 
@@ -125,7 +187,7 @@ impl SystemContext {
     where
         A: Actor,
     {
-        let mailbox = self.spawn_actor(actor).unwrap();
+        let mailbox = self.spawn_actor(actor, None).unwrap();
 
         if let Ok(mut registry) = self.registry.lock() {
             registry.insert(name.to_string(), Box::new(mailbox.copy()));
@@ -148,10 +210,10 @@ impl SystemContext {
     }
 
     pub(crate) fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) -> bool {
-        self.spawner.spawn(fut).is_ok()
+        self.spawner.spawn(fut).is_ok() // TODO; Better way of handling spawn errors?
     }
 
-    pub(crate) fn spawn_actor<A>(&mut self, actor: A) -> Result<Mailbox<A>, ()>
+    pub(crate) fn spawn_actor<A>(&mut self, actor: A, sup: Option<Box<dyn Supervises<A>>>) -> Result<Mailbox<A>, ()>
     where
         A: Actor,
     {
@@ -165,9 +227,11 @@ impl SystemContext {
             actor: actor,
             recv: Some(rx),
             listeners: listeners,
-            inner: ActorContext::new(self.id_counter, self.clone()),
+            supervisor: sup,
+            inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
         };
 
+        // TODO; Figure out a way to move this into the true branch below
         Actor::started(&mut bundle.actor);
 
         match self.spawn_future(bundle) {
@@ -177,41 +241,66 @@ impl SystemContext {
     }
 }
 
-#[derive(Clone)]
-pub enum SystemMessage {
-    Stop,
-}
+struct StopActor;
 
-impl Message for SystemMessage {
+impl Message for StopActor {
     type Result = ();
 }
 
-impl<A> Handle<SystemMessage> for A
-where
-    A: Actor,
-{
+impl<A> Handle<StopActor> for A where A: Actor {
+    type Response = ();
+    fn accept(&mut self, msg: StopActor, cx: &mut ActorContext<A>) {
+        cx.stop();
+    }
+}
+
+pub(crate) struct WorkerStopped<W: Actor>(usize, PanicData, PhantomData<*const W>);
+unsafe impl<W> Send for WorkerStopped<W> where W: Actor {}
+
+impl<W> Message for WorkerStopped<W> where W: Actor {
+    type Result = ();
+}
+
+pub trait Supervisor<W>: Actor where W: Actor {
+    fn worker_stopped(&mut self, worker_id: usize, info: PanicData);
+}
+
+pub(crate) trait Supervises<A>: Send + Sync + 'static where A: Actor {
+    fn notify_worker_stopped(&self, worker_id: usize, info: PanicData);
+    fn _copy_mailbox(&self) -> Box<dyn Supervises<A>>;
+}
+
+impl<S, W> Handle<WorkerStopped<W>> for S where S: Supervisor<W>, W: Actor {
     type Response = ();
 
-    fn accept(&mut self, msg: SystemMessage, cx: &mut ActorContext) {
-        println!("Actor {} handling system message.", cx.id());
-        match msg {
-            SystemMessage::Stop => cx.stop(),
-        }
+    fn accept(&mut self, msg: WorkerStopped<W>, _: &mut ActorContext<S>) {
+        self.worker_stopped(msg.0, msg.1)
+    }
+}
+
+impl<S, W> Supervises<W> for Mailbox<S> where S: Supervisor<W> + Handle<WorkerStopped<W>>, W: Actor
+{
+    fn notify_worker_stopped(&self, worker_id: usize, info: PanicData) {
+        self.send(WorkerStopped(worker_id, info, PhantomData::<*const W>));
+    }
+
+    fn _copy_mailbox(&self) -> Box<dyn Supervises<W>> {
+        Box::new(self.copy())
     }
 }
 
 // Kind-of-Hack to be able to send certain generic messages to all mailboxes
-trait AcceptsSystemMessage: mopa::Any + Send + 'static {
-    fn system_message(&self, msg: SystemMessage);
+trait StoppableActor: mopa::Any + Send + 'static {
+    fn stop_me(&self);
 }
-mopafy!(AcceptsSystemMessage);
+mopafy!(StoppableActor);
 
-impl<A> AcceptsSystemMessage for Mailbox<A>
+impl<A> StoppableActor for Mailbox<A>
 where
     A: Actor,
 {
-    fn system_message(&self, msg: SystemMessage) {
-        self.send(msg);
+    fn stop_me(&self) {
+        self.send(StopActor);
     }
 }
 
@@ -230,7 +319,7 @@ impl System {
     where
         A: Actor,
     {
-        self.context.spawn_actor(actor).unwrap()
+        self.context.spawn_actor(actor, None).unwrap()
     }
 
     pub fn register<A>(&mut self, name: &str, actor: A) -> Mailbox<A>
@@ -253,7 +342,7 @@ impl System {
         match self.context.registry.lock() {
             Ok(registry) => {
                 for service in registry.values() {
-                    service.system_message(SystemMessage::Stop);
+                    service.stop_me();
                 }
             }
             Err(_) => panic!("Could not terminate services..."),

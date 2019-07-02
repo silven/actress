@@ -2,10 +2,7 @@
 
 use std::time::Duration;
 
-use actress::{
-    Actor, ActorContext, Handle, Message,
-    System, SyncResponse,
-};
+use actress::{Actor, ActorContext, Handle, Message, SyncResponse, System};
 
 struct Dummy {
     count: u64,
@@ -47,14 +44,13 @@ impl Handle<Msg> for Dummy {
             }
             Msg::Respond => Response::Response(self.count),
         };
-        SyncResponse(r)
+        SyncResponse::new(r)
     }
 }
 
 fn main() {
     let mut system = System::new();
 
-    // Services are killed when the system is stopped.
     let act = system.register("dummy", Dummy::new());
 
     let a = act.copy();

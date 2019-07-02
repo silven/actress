@@ -7,7 +7,8 @@ mod response;
 mod system;
 
 pub use crate::{
+    mailbox::Mailbox,
     actor::{Actor, ActorContext, Handle, Message},
-    system::System,
     response::{AsyncResponse, SyncResponse},
+    system::{System, Supervisor, PanicData},
 };

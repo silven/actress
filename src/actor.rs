@@ -1,16 +1,19 @@
 use crate::mailbox::Mailbox;
-use crate::system::SystemContext;
+use crate::system::{SystemContext, ActorBundle, Supervises};
 
 use futures::future::FutureObj;
-use tokio_sync::oneshot;
-use tokio_threadpool::Sender;
 use std::future::Future;
-use std::pin::Pin;
 use std::marker::PhantomData;
+use std::pin::Pin;
+use tokio_sync::{oneshot, mpsc};
+use tokio_threadpool::Sender;
 
 use crate::response::Response;
+use std::sync::{Arc, Mutex};
+use crate::Supervisor;
+use std::collections::HashMap;
 
-pub trait Message: 'static {
+pub trait Message: Send + 'static {
     type Result;
 }
 
@@ -21,15 +24,17 @@ where
 {
     type Response: Response<M>;
 
-    fn accept(&mut self, msg: M, cx: &mut ActorContext) -> Self::Response;
+    fn accept(&mut self, msg: M, cx: &mut ActorContext<Self>) -> Self::Response;
 }
 
+/// Decide what to do in the event of being stopped before the message backlog is empty
 pub enum BacklogPolicy {
     Flush,
     Reject,
 }
 
-pub trait Actor: Send + 'static {
+// TODO: Why did adding <A> to ActorContext introduce a requirement on Sized in Handle<M>?
+pub trait Actor: Sized + Send + 'static {
     fn starting(&mut self) {}
     fn started(&mut self) {}
 
@@ -48,17 +53,19 @@ pub(crate) enum ActorState {
     Stopped,
 }
 
-pub struct ActorContext {
+pub struct ActorContext<A> where A: Actor {
     id: usize,
     state: ActorState,
+    mailbox: Mailbox<A>,
     pub(crate) system: SystemContext,
 }
 
-impl ActorContext {
-    pub(crate) fn new(id: usize, system: SystemContext) -> Self {
+impl<Me> ActorContext<Me> where Me: Actor {
+    pub(crate) fn new(id: usize, mailbox: Mailbox<Me>, system: SystemContext) -> Self {
         ActorContext {
             id: id,
             state: ActorState::Started,
+            mailbox: mailbox,
             system: system,
         }
     }
@@ -71,11 +78,26 @@ impl ActorContext {
         self.state == ActorState::Stopping
     }
 
+    pub fn mailbox(&self) -> Mailbox<Me> {
+        self.mailbox.copy()
+    }
+
     pub fn spawn_actor<A>(&mut self, actor: A) -> Option<Mailbox<A>>
     where
         A: Actor,
     {
-        match self.system.spawn_actor(actor) {
+        match self.system.spawn_actor(actor, None) {
+            Ok(mailbox) => Some(mailbox),
+            Err(_) => None,
+        }
+    }
+
+    pub fn spawn_child<W>(&mut self, actor: W) -> Option<Mailbox<W>>
+        where
+            W: Actor,
+            Me: Supervisor<W>,
+    {
+        match self.system.spawn_actor(actor, Some(Box::new(self.mailbox()))) {
             Ok(mailbox) => Some(mailbox),
             Err(_) => None,
         }

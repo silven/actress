@@ -1,3 +1,8 @@
+# README
+
+This is just a plaything. Seriously.
+
+```rust
 #![feature(async_await)]
 use actress::{Actor, ActorContext, AsyncResponse, Handle, Message, System};
 
@@ -55,3 +60,5 @@ fn main() {
 
     system.run_until_completion();
 }
+
+```

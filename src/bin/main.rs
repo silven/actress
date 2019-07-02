@@ -5,10 +5,7 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use actress::{
-    Actor, ActorContext, Handle, Message,
-    System,
-};
+use actress::{Actor, ActorContext, Handle, Message, System};
 
 struct Dummy {
     str_count: usize,
