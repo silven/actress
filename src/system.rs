@@ -43,7 +43,7 @@ where
             println!("Inside panic hook!");
             if let Some(sup) = sup_guard.swap(None) {
                 println!("Notifying sup about worker crash!");
-                sup.notify_worker_stopped(my_id, Some(From::from(info)));
+                sup.notify_worker_stopped(my_id, Some(info.into()));
             };
         }));
 

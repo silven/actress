@@ -70,14 +70,14 @@ impl SystemContext {
         #[cfg(feature = "peek")]
         {
             let listeners = Arc::new(Mutex::new(HashMap::new()));
-            let mailbox = Mailbox::<A>::new(tx, Arc::downgrade(&listeners));
+            let mailbox = Mailbox::<A>::new(self.id_counter, tx, Arc::downgrade(&listeners));
 
             let mut bundle = ActorBundle {
                 actor: actor,
                 recv: Some(rx),
                 supervisor: SupervisorGuard::new(self.id_counter, sup),
                 listeners: listeners,
-                inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
+                inner: ActorContext::new(mailbox.copy(), self.clone()),
             };
 
             // TODO; Figure out a way to move this into the true-branch below
@@ -91,13 +91,13 @@ impl SystemContext {
 
         #[cfg(not(feature = "peek"))]
         {
-            let mailbox = Mailbox::<A>::new(tx);
+            let mailbox = Mailbox::<A>::new(self.id_counter, tx);
 
             let mut bundle = ActorBundle {
                 actor: actor,
                 recv: Some(rx),
                 supervisor: SupervisorGuard::new(self.id_counter, sup),
-                inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
+                inner: ActorContext::new(mailbox.copy(), self.clone()),
             };
 
             // TODO; Figure out a way to move this into the true-branch below

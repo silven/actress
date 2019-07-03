@@ -46,6 +46,7 @@ impl Handle<FibRequest> for FibberSup {
                 master: cx.mailbox(),
             })
             .unwrap();
+
         cx.stop();
         slave.send(msg);
     }

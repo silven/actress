@@ -51,7 +51,6 @@ pub struct ActorContext<A>
 where
     A: Actor,
 {
-    id: usize,
     state: ActorState,
     mailbox: Mailbox<A>,
     pub(crate) system: SystemContext,
@@ -62,9 +61,8 @@ impl<Me> ActorContext<Me>
 where
     Me: Actor,
 {
-    pub(crate) fn new(id: usize, mailbox: Mailbox<Me>, system: SystemContext) -> Self {
+    pub(crate) fn new(mailbox: Mailbox<Me>, system: SystemContext) -> Self {
         ActorContext {
-            id: id,
             state: ActorState::Started,
             mailbox: mailbox,
             system: system,
@@ -73,7 +71,7 @@ where
     }
 
     pub fn id(&self) -> usize {
-        self.id
+        self.mailbox.id()
     }
 
     pub(crate) fn is_stopping(&self) -> bool {
