@@ -11,7 +11,10 @@ impl Message for StopActor {
     type Result = ();
 }
 
-impl<A> Handle<StopActor> for A where A: Actor {
+impl<A> Handle<StopActor> for A
+where
+    A: Actor,
+{
     type Response = ();
     fn accept(&mut self, _msg: StopActor, cx: &mut ActorContext<A>) {
         cx.stop();
@@ -26,8 +29,8 @@ pub(crate) trait StoppableActor: mopa::Any + Send + 'static {
 mopafy!(StoppableActor);
 
 impl<A> StoppableActor for Mailbox<A>
-    where
-        A: Actor,
+where
+    A: Actor,
 {
     fn stop_me(&self) {
         self.send(StopActor);
@@ -40,15 +43,25 @@ impl<A> StoppableActor for Mailbox<A>
 pub(crate) struct WorkerStopped<W: Actor>(usize, Option<PanicData>, PhantomData<*const W>);
 unsafe impl<W> Send for WorkerStopped<W> where W: Actor {}
 
-impl<W> Message for WorkerStopped<W> where W: Actor {
+impl<W> Message for WorkerStopped<W>
+where
+    W: Actor,
+{
     type Result = ();
 }
 
-pub(crate) trait Supervises<A>: Send + Sync + 'static where A: Actor {
+pub(crate) trait Supervises<A>: Send + Sync + 'static
+where
+    A: Actor,
+{
     fn notify_worker_stopped(&self, worker_id: usize, info: Option<PanicData>);
 }
 
-impl<S, W> Handle<WorkerStopped<W>> for S where S: Supervisor<W>, W: Actor {
+impl<S, W> Handle<WorkerStopped<W>> for S
+where
+    S: Supervisor<W>,
+    W: Actor,
+{
     type Response = ();
 
     fn accept(&mut self, msg: WorkerStopped<W>, _: &mut ActorContext<S>) {
@@ -56,7 +69,10 @@ impl<S, W> Handle<WorkerStopped<W>> for S where S: Supervisor<W>, W: Actor {
     }
 }
 
-impl<S, W> Supervises<W> for Mailbox<S> where S: Supervisor<W> + Handle<WorkerStopped<W>>, W: Actor
+impl<S, W> Supervises<W> for Mailbox<S>
+where
+    S: Supervisor<W> + Handle<WorkerStopped<W>>,
+    W: Actor,
 {
     fn notify_worker_stopped(&self, worker_id: usize, info: Option<PanicData>) {
         self.send(WorkerStopped(worker_id, info, PhantomData::<*const W>));
@@ -70,11 +86,17 @@ impl Message for SupervisorStopped {
     type Result = ();
 }
 
-pub(crate) trait SupervisedBy<A>: Send + Sync + 'static where A: Actor {
+pub(crate) trait SupervisedBy<A>: Send + Sync + 'static
+where
+    A: Actor,
+{
     fn notify_supervisor_stopped(&self);
 }
 
-impl<A> Handle<SupervisorStopped> for A where A: Actor,  {
+impl<A> Handle<SupervisorStopped> for A
+where
+    A: Actor,
+{
     type Response = ();
 
     fn accept(&mut self, _msg: SupervisorStopped, cx: &mut ActorContext<A>) {
@@ -82,7 +104,11 @@ impl<A> Handle<SupervisorStopped> for A where A: Actor,  {
     }
 }
 
-impl<S, W> SupervisedBy<S> for Mailbox<W> where S: Supervisor<W>, W: Actor + Handle<SupervisorStopped> {
+impl<S, W> SupervisedBy<S> for Mailbox<W>
+where
+    S: Supervisor<W>,
+    W: Actor + Handle<SupervisorStopped>,
+{
     fn notify_supervisor_stopped(&self) {
         self.send(SupervisorStopped);
     }

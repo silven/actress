@@ -31,7 +31,9 @@ pub trait Actor: Sized + Send + 'static {
     fn stopping(&mut self) {}
     fn stopped(&mut self) {}
 
-    fn supervisor_stopped(&mut self, cx: &mut ActorContext<Self>) { cx.stop(); }
+    fn supervisor_stopped(&mut self, cx: &mut ActorContext<Self>) {
+        cx.stop();
+    }
 
     fn backlog_policy(&self) -> BacklogPolicy {
         BacklogPolicy::Flush
@@ -45,7 +47,10 @@ pub(crate) enum ActorState {
     Stopped,
 }
 
-pub struct ActorContext<A> where A: Actor {
+pub struct ActorContext<A>
+where
+    A: Actor,
+{
     id: usize,
     state: ActorState,
     mailbox: Mailbox<A>,
@@ -53,7 +58,10 @@ pub struct ActorContext<A> where A: Actor {
     children: ChildGuard<A>,
 }
 
-impl<Me> ActorContext<Me> where Me: Actor {
+impl<Me> ActorContext<Me>
+where
+    Me: Actor,
+{
     pub(crate) fn new(id: usize, mailbox: Mailbox<Me>, system: SystemContext) -> Self {
         ActorContext {
             id: id,
@@ -87,15 +95,18 @@ impl<Me> ActorContext<Me> where Me: Actor {
     }
 
     pub fn spawn_child<W>(&mut self, actor: W) -> Option<Mailbox<W>>
-        where
-            W: Actor,
-            Me: Supervisor<W>,
+    where
+        W: Actor,
+        Me: Supervisor<W>,
     {
-        match self.system.spawn_actor(actor, Some(Box::new(self.mailbox()))) {
+        match self
+            .system
+            .spawn_actor(actor, Some(Box::new(self.mailbox())))
+        {
             Ok(mailbox) => {
                 self.children.push(mailbox.copy());
                 Some(mailbox)
-            },
+            }
             Err(_) => None,
         }
     }

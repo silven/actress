@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use tokio_sync::mpsc;
 use tokio_threadpool::Sender;
 
-use crate::{Actor, ActorContext, Mailbox};
 use crate::internal_handlers::{StoppableActor, Supervises};
 use crate::supervisor::SupervisorGuard;
 use crate::system::ActorBundle;
+use crate::{Actor, ActorContext, Mailbox};
 
 #[derive(Clone)]
 pub(crate) struct SystemContext {
@@ -27,8 +27,8 @@ impl SystemContext {
     }
 
     pub(crate) fn register<A>(&mut self, name: &str, actor: A) -> Mailbox<A>
-        where
-            A: Actor,
+    where
+        A: Actor,
     {
         let mailbox = self.spawn_actor(actor, None).unwrap();
 
@@ -39,8 +39,8 @@ impl SystemContext {
     }
 
     pub(crate) fn find<A>(&self, name: &str) -> Option<Mailbox<A>>
-        where
-            A: Actor,
+    where
+        A: Actor,
     {
         if let Ok(registry) = self.registry.lock() {
             if let Some(mailboxbox) = registry.get(name) {
@@ -56,14 +56,19 @@ impl SystemContext {
         self.spawner.spawn(fut).is_ok() // TODO; Better way of handling spawn errors?
     }
 
-    pub(crate) fn spawn_actor<A>(&mut self, actor: A, sup: Option<Box<dyn Supervises<A>>>) -> Result<Mailbox<A>, ()>
-        where
-            A: Actor,
+    pub(crate) fn spawn_actor<A>(
+        &mut self,
+        actor: A,
+        sup: Option<Box<dyn Supervises<A>>>,
+    ) -> Result<Mailbox<A>, ()>
+    where
+        A: Actor,
     {
         let (tx, rx) = mpsc::unbounded_channel();
         self.id_counter += 1;
 
-        #[cfg(feature="peek")] {
+        #[cfg(feature = "peek")]
+        {
             let listeners = Arc::new(Mutex::new(HashMap::new()));
             let mailbox = Mailbox::<A>::new(tx, Arc::downgrade(&listeners));
 
@@ -84,7 +89,8 @@ impl SystemContext {
             }
         }
 
-        #[cfg(not(feature="peek"))] {
+        #[cfg(not(feature = "peek"))]
+        {
             let mailbox = Mailbox::<A>::new(tx);
 
             let mut bundle = ActorBundle {

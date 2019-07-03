@@ -3,10 +3,13 @@ use std::sync::Arc;
 
 use crossbeam::atomic::AtomicCell;
 
-use crate::{Actor, Mailbox};
 use crate::internal_handlers::{SupervisedBy, Supervises};
+use crate::{Actor, Mailbox};
 
-pub trait Supervisor<W>: Actor where W: Actor {
+pub trait Supervisor<W>: Actor
+where
+    W: Actor,
+{
     fn worker_stopped(&mut self, worker_id: usize, info: Option<PanicData>);
 }
 
@@ -23,12 +26,14 @@ impl From<&std::panic::PanicInfo<'_>> for PanicData {
         // Current impl always returns Some
         let loc = value.location().unwrap();
         PanicData {
-            message: value.payload().downcast_ref::<&str>().map(ToString::to_string),
+            message: value
+                .payload()
+                .downcast_ref::<&str>()
+                .map(ToString::to_string),
             file: loc.file().to_owned(),
             line: loc.line(),
             column: loc.column(),
         }
-
     }
 }
 
@@ -47,20 +52,31 @@ impl Drop for PanicHookGuard {
     }
 }
 
+pub(crate) struct ChildGuard<A>(Vec<Box<dyn SupervisedBy<A>>>)
+where
+    A: Actor;
 
-pub(crate) struct ChildGuard<A>(Vec<Box<dyn SupervisedBy<A>>>) where A: Actor;
-
-impl<A> ChildGuard<A> where A: Actor {
+impl<A> ChildGuard<A>
+where
+    A: Actor,
+{
     pub(crate) fn new() -> Self {
         ChildGuard(Vec::new())
     }
 
-    pub(crate) fn push<W>(&mut self, mailbox: Mailbox<W>) where A: Supervisor<W>, W: Actor {
+    pub(crate) fn push<W>(&mut self, mailbox: Mailbox<W>)
+    where
+        A: Supervisor<W>,
+        W: Actor,
+    {
         self.0.push(Box::new(mailbox));
     }
 }
 
-impl<A> Drop for ChildGuard<A> where A: Actor {
+impl<A> Drop for ChildGuard<A>
+where
+    A: Actor,
+{
     fn drop(&mut self) {
         for child in &self.0 {
             child.notify_supervisor_stopped();
@@ -68,11 +84,23 @@ impl<A> Drop for ChildGuard<A> where A: Actor {
     }
 }
 
-pub(crate) struct SupervisorGuard<A> where A: Actor { id: usize, inner: Arc<AtomicCell<Option<Box<dyn Supervises<A>>>>> }
+pub(crate) struct SupervisorGuard<A>
+where
+    A: Actor,
+{
+    id: usize,
+    inner: Arc<AtomicCell<Option<Box<dyn Supervises<A>>>>>,
+}
 
-impl<A> SupervisorGuard<A> where A: Actor {
+impl<A> SupervisorGuard<A>
+where
+    A: Actor,
+{
     pub(crate) fn new(id: usize, sup: Option<Box<dyn Supervises<A>>>) -> Self {
-        SupervisorGuard { id, inner: Arc::new(AtomicCell::new(sup)) }
+        SupervisorGuard {
+            id,
+            inner: Arc::new(AtomicCell::new(sup)),
+        }
     }
 
     pub(crate) fn is_some(&self) -> bool {
@@ -87,7 +115,10 @@ impl<A> SupervisorGuard<A> where A: Actor {
     }
 }
 
-impl<A> Drop for SupervisorGuard<A> where A: Actor {
+impl<A> Drop for SupervisorGuard<A>
+where
+    A: Actor,
+{
     fn drop(&mut self) {
         println!("Dropping supervisor guard");
         if let Some(sup) = self.inner.swap(None) {

@@ -5,15 +5,15 @@ use std::task::Context;
 
 use futures::executor::block_on;
 use futures::future::Future;
-use futures::Poll;
 use futures::stream::StreamExt;
+use futures::Poll;
 use tokio_sync::mpsc;
 use tokio_threadpool::ThreadPool;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
-use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
-#[cfg(feature="peek")]
+#[cfg(feature = "peek")]
 use crate::mailbox::PeekGrab;
+use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
 use crate::supervisor::{PanicHookGuard, SupervisorGuard};
 use crate::system_context::SystemContext;
 
@@ -56,16 +56,17 @@ where
             match self.recv.as_mut().unwrap().poll_recv(cx) {
                 Poll::Ready(Some(mut msg)) => {
                     // TODO: Is this really safe?
-                    let process_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        msg.accept(&mut self)
-                    }));
+                    let process_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            msg.accept(&mut self)
+                        }));
 
                     match process_result {
-                        Ok(()) => { /* all is well */},
+                        Ok(()) => { /* all is well */ }
                         Err(_) => {
                             self.close_and_stop();
                             return Poll::Ready(());
-                        },
+                        }
                     }
 
                     if self.inner.is_stopping() {
@@ -103,7 +104,7 @@ pub(crate) struct ActorBundle<A: Actor> {
     pub(crate) inner: ActorContext<A>,
     pub(crate) recv: Option<mpsc::UnboundedReceiver<Envelope<A>>>,
     pub(crate) supervisor: SupervisorGuard<A>,
-    #[cfg(feature="peek")]
+    #[cfg(feature = "peek")]
     pub(crate) listeners: Arc<Mutex<AnyArcMap>>,
 }
 
@@ -111,7 +112,7 @@ impl<A> ActorBundle<A>
 where
     A: Actor,
 {
-    #[cfg(feature="peek")]
+    #[cfg(feature = "peek")]
     pub(crate) fn get_listener<M>(&self) -> Option<Arc<PeekGrab<M>>>
     where
         A: Handle<M>,
@@ -134,7 +135,6 @@ where
         return block_on(rx.collect());
     }
 }
-
 
 impl System {
     pub fn new() -> Self {

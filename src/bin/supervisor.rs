@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use actress::{Mailbox, Actor, ActorContext, Handle, Message, System, Supervisor, AsyncResponse, PanicData};
+use actress::{
+    Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message, PanicData, Supervisor, System,
+};
 use std::time::Duration;
-
 
 impl Actor for FibberSup {
     fn stopped(&mut self) {
@@ -40,13 +41,19 @@ impl Handle<FibRequest> for FibberSup {
     type Response = ();
 
     fn accept(&mut self, msg: FibRequest, cx: &mut ActorContext<Self>) {
-        let slave = cx.spawn_child(FibberWorker { master: cx.mailbox() }).unwrap();
+        let slave = cx
+            .spawn_child(FibberWorker {
+                master: cx.mailbox(),
+            })
+            .unwrap();
         cx.stop();
         slave.send(msg);
     }
 }
 
-struct FibberWorker { master: Mailbox<FibberSup> }
+struct FibberWorker {
+    master: Mailbox<FibberSup>,
+}
 
 impl Actor for FibberWorker {
     fn stopped(&mut self) {

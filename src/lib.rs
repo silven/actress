@@ -2,17 +2,17 @@
 #![deny(unused_imports)]
 
 mod actor;
+mod internal_handlers;
 mod mailbox;
 mod response;
-mod system;
-mod internal_handlers;
 mod supervisor;
+mod system;
 mod system_context;
 
 pub use crate::{
-    mailbox::Mailbox,
     actor::{Actor, ActorContext, Handle, Message},
+    mailbox::Mailbox,
     response::{AsyncResponse, SyncResponse},
-    system::{System},
-    supervisor::{Supervisor, PanicData},
+    supervisor::{PanicData, Supervisor},
+    system::System,
 };
