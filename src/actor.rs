@@ -1,7 +1,3 @@
-use std::sync::Mutex;
-
-use tokio_sync::oneshot;
-
 use crate::mailbox::Mailbox;
 use crate::response::Response;
 use crate::supervisor::{ChildGuard, Supervisor};

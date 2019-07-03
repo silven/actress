@@ -1,19 +1,19 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
 use std::task::Context;
 
 use futures::executor::block_on;
 use futures::future::Future;
 use futures::Poll;
 use futures::stream::StreamExt;
-use mopa;
 use tokio_sync::mpsc;
-use tokio_threadpool::{ThreadPool, Worker};
+use tokio_threadpool::ThreadPool;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
-use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox, PeekGrab};
+use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
+#[cfg(feature="peek")]
+use crate::mailbox::PeekGrab;
 use crate::supervisor::{PanicHookGuard, SupervisorGuard};
 use crate::system_context::SystemContext;
 
@@ -103,6 +103,7 @@ pub(crate) struct ActorBundle<A: Actor> {
     pub(crate) inner: ActorContext<A>,
     pub(crate) recv: Option<mpsc::UnboundedReceiver<Envelope<A>>>,
     pub(crate) supervisor: SupervisorGuard<A>,
+    #[cfg(feature="peek")]
     pub(crate) listeners: Arc<Mutex<AnyArcMap>>,
 }
 
@@ -110,6 +111,7 @@ impl<A> ActorBundle<A>
 where
     A: Actor,
 {
+    #[cfg(feature="peek")]
     pub(crate) fn get_listener<M>(&self) -> Option<Arc<PeekGrab<M>>>
     where
         A: Handle<M>,

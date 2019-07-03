@@ -1,6 +1,5 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -35,6 +34,7 @@ where
     reply: Option<oneshot::Sender<Option<M::Result>>>,
 }
 
+#[cfg(feature="peek")]
 pub(crate) enum PeekGrab<M: Message> {
     Peek(Box<dyn Fn(&M) + Send + Sync + 'static>),
     Alter(Box<dyn Fn(M) -> M + Send + Sync + 'static>),
@@ -50,25 +50,28 @@ where
 
     fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>) {
         let mut msg = self.msg.take().unwrap();
-        let listener = actor.get_listener::<M>();
 
-        if let Some(arc) = listener {
-            match *arc {
-                PeekGrab::Peek(ref peek) => {
-                    peek(&msg);
-                }
-                PeekGrab::Alter(ref alter) => {
-                    msg = alter(msg);
-                }
-                PeekGrab::Grab(ref grab) => {
-                    let result = grab(msg);
-                    if let Some(tx) = self.reply.take() {
-                        tx.send(Some(result));
+        #[cfg(feature="peek")]
+        {
+            if let Some(arc) = actor.get_listener::<M>() {
+                match *arc {
+                    PeekGrab::Peek(ref peek) => {
+                        peek(&msg);
                     }
-                    return;
+                    PeekGrab::Alter(ref alter) => {
+                        msg = alter(msg);
+                    }
+                    PeekGrab::Grab(ref grab) => {
+                        let result = grab(msg);
+                        if let Some(tx) = self.reply.take() {
+                            tx.send(Some(result));
+                        }
+                        return;
+                    }
                 }
             }
         }
+
 
         let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
         result.handle(actor.inner.system.spawner.clone(), self.reply.take());
@@ -130,6 +133,7 @@ where
     A: Actor,
 {
     tx: mpsc::UnboundedSender<Envelope<A>>,
+    #[cfg(feature="peek")]
     listeners: Weak<Mutex<AnyMap>>,
 }
 
@@ -149,6 +153,7 @@ impl<A> Mailbox<A>
 where
     A: Actor,
 {
+    #[cfg(feature="peek")]
     pub(crate) fn new(
         inbox: mpsc::UnboundedSender<Envelope<A>>,
         listeners: Weak<Mutex<AnyMap>>,
@@ -159,11 +164,27 @@ where
         }
     }
 
-    // Can't use Clone for &Mailbox due to blanket impl :/
+    #[cfg(not(feature="peek"))]
+    pub(crate) fn new(
+        inbox: mpsc::UnboundedSender<Envelope<A>>,
+    ) -> Self {
+        Mailbox {
+            tx: inbox,
+        }
+    }
+
+    #[cfg(feature="peek")]
     pub fn copy(&self) -> Self {
         Mailbox {
             tx: self.tx.clone(),
             listeners: self.listeners.clone(),
+        }
+    }
+
+    #[cfg(not(feature="peek"))]
+    pub fn copy(&self) -> Self {
+        Mailbox {
+            tx: self.tx.clone(),
         }
     }
 
@@ -180,6 +201,7 @@ where
         }
     }
 
+    #[cfg(feature="peek")]
     pub fn peek<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -189,6 +211,7 @@ where
         self.add_listener(PeekGrab::Peek(Box::new(handler)));
     }
 
+    #[cfg(feature="peek")]
     pub fn alter<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -198,17 +221,8 @@ where
         self.add_listener(PeekGrab::Alter(Box::new(handler)));
     }
 
-    /*
-    pub fn alter_response<M, F>(&self, handler: F)
-    where
-        A: Actor + Handle<M>,
-        M: Message,
-        F: Fn(M::Result) -> M::Result + Send + Sync + 'static,
-    {
-        self.add_listener(PeekGrab::AlterResponse(Box::new(handler)));
-    }
-    */
 
+    #[cfg(feature="peek")]
     pub fn grab<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -218,6 +232,7 @@ where
         self.add_listener(PeekGrab::Grab(Box::new(handler)));
     }
 
+    #[cfg(feature="peek")]
     pub fn clear_listener<M>(&self)
     where
         A: Actor + Handle<M>,
@@ -230,6 +245,7 @@ where
         }
     }
 
+    #[cfg(feature="peek")]
     fn add_listener<M>(&self, listener: PeekGrab<M>)
     where
         A: Actor + Handle<M>,

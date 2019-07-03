@@ -61,25 +61,46 @@ impl SystemContext {
             A: Actor,
     {
         let (tx, rx) = mpsc::unbounded_channel();
-
-        let listeners = Arc::new(Mutex::new(HashMap::new()));
-        let mailbox = Mailbox::<A>::new(tx, Arc::downgrade(&listeners));
-
         self.id_counter += 1;
-        let mut bundle = ActorBundle {
-            actor: actor,
-            recv: Some(rx),
-            supervisor: SupervisorGuard::new(self.id_counter, sup),
-            listeners: listeners,
-            inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
-        };
 
-        // TODO; Figure out a way to move this into the true-branch below
-        Actor::started(&mut bundle.actor);
+        #[cfg(feature="peek")] {
+            let listeners = Arc::new(Mutex::new(HashMap::new()));
+            let mailbox = Mailbox::<A>::new(tx, Arc::downgrade(&listeners));
 
-        match self.spawn_future(bundle) {
-            true => Ok(mailbox),
-            false => Err(()),
+            let mut bundle = ActorBundle {
+                actor: actor,
+                recv: Some(rx),
+                supervisor: SupervisorGuard::new(self.id_counter, sup),
+                listeners: listeners,
+                inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
+            };
+
+            // TODO; Figure out a way to move this into the true-branch below
+            Actor::started(&mut bundle.actor);
+
+            match self.spawn_future(bundle) {
+                true => Ok(mailbox),
+                false => Err(()),
+            }
+        }
+
+        #[cfg(not(feature="peek"))] {
+            let mailbox = Mailbox::<A>::new(tx);
+
+            let mut bundle = ActorBundle {
+                actor: actor,
+                recv: Some(rx),
+                supervisor: SupervisorGuard::new(self.id_counter, sup),
+                inner: ActorContext::new(self.id_counter, mailbox.copy(), self.clone()),
+            };
+
+            // TODO; Figure out a way to move this into the true-branch below
+            Actor::started(&mut bundle.actor);
+
+            match self.spawn_future(bundle) {
+                true => Ok(mailbox),
+                false => Err(()),
+            }
         }
     }
 }

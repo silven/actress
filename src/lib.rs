@@ -1,4 +1,5 @@
 #![feature(async_await, arbitrary_self_types, specialization)]
+#![deny(unused_imports)]
 
 mod actor;
 mod mailbox;

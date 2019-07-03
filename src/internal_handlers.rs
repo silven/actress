@@ -1,9 +1,10 @@
 use std::marker::PhantomData;
 
-use mopa::{Any, mopafy};
+use mopa::mopafy;
 
 use crate::{Actor, ActorContext, Handle, Mailbox, Message, PanicData, Supervisor};
 
+// All actors can be stopped by a StopActor message, sent by the system.
 struct StopActor;
 
 impl Message for StopActor {
@@ -16,6 +17,24 @@ impl<A> Handle<StopActor> for A where A: Actor {
         cx.stop();
     }
 }
+
+// Kind-of-Hack to be able to use this stop function as well as being able to downcast from inside
+// the registry
+pub(crate) trait StoppableActor: mopa::Any + Send + 'static {
+    fn stop_me(&self);
+}
+mopafy!(StoppableActor);
+
+impl<A> StoppableActor for Mailbox<A>
+    where
+        A: Actor,
+{
+    fn stop_me(&self) {
+        self.send(StopActor);
+    }
+}
+
+// All Supvervisors get a message when a worker it it supvervising has stopped.
 
 /// If there is panic data, there was a crash. If there is none, it stopped gracefully.
 pub(crate) struct WorkerStopped<W: Actor>(usize, Option<PanicData>, PhantomData<*const W>);
@@ -44,6 +63,8 @@ impl<S, W> Supervises<W> for Mailbox<S> where S: Supervisor<W> + Handle<WorkerSt
     }
 }
 
+// We also notify workers when their supervisor has stopped
+
 pub(crate) struct SupervisorStopped;
 impl Message for SupervisorStopped {
     type Result = ();
@@ -64,20 +85,5 @@ impl<A> Handle<SupervisorStopped> for A where A: Actor,  {
 impl<S, W> SupervisedBy<S> for Mailbox<W> where S: Supervisor<W>, W: Actor + Handle<SupervisorStopped> {
     fn notify_supervisor_stopped(&self) {
         self.send(SupervisorStopped);
-    }
-}
-
-// Kind-of-Hack to be able to send certain generic messages to all mailboxes
-pub(crate) trait StoppableActor: mopa::Any + Send + 'static {
-    fn stop_me(&self);
-}
-mopafy!(StoppableActor);
-
-impl<A> StoppableActor for Mailbox<A>
-    where
-        A: Actor,
-{
-    fn stop_me(&self) {
-        self.send(StopActor);
     }
 }
