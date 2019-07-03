@@ -35,7 +35,7 @@ impl Message for Msg {
 impl Handle<Msg> for Dummy {
     type Response = SyncResponse<Msg>;
 
-    fn accept(&mut self, msg: Msg, cx: &mut ActorContext) -> Self::Response {
+    fn accept(&mut self, msg: Msg, cx: &mut ActorContext<Self>) -> Self::Response {
         let r = match msg {
             Msg::Compute(value) => {
                 std::thread::sleep(Duration::from_millis(value));

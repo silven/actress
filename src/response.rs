@@ -1,9 +1,10 @@
-use crate::actor::Message;
-
 use std::future::Future;
 use std::pin::Pin;
+
 use tokio_sync::oneshot;
 use tokio_threadpool::Sender;
+
+use crate::actor::Message;
 
 pub trait Response<M: Message> {
     fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>);

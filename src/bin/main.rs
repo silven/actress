@@ -44,7 +44,7 @@ impl Message for Msg<String> {
 impl Handle<Msg<String>> for Dummy {
     type Response = String;
 
-    fn accept(&mut self, msg: Msg<String>, cx: &mut ActorContext) -> Self::Response {
+    fn accept(&mut self, msg: Msg<String>, cx: &mut ActorContext<Self>) -> Self::Response {
         self.str_count += 1;
         println!(
             "I got a string message, {}, {}/{}",
@@ -85,7 +85,7 @@ impl Message for Msg<usize> {
 impl Handle<Msg<usize>> for Dummy {
     type Response = usize;
 
-    fn accept(&mut self, msg: Msg<usize>, cx: &mut ActorContext) -> Self::Response {
+    fn accept(&mut self, msg: Msg<usize>, cx: &mut ActorContext<Self>) -> Self::Response {
         self.int_count += 1;
         println!(
             "I got a numerical message, {} {}/{}",

@@ -1,17 +1,11 @@
+use std::sync::Mutex;
+
+use tokio_sync::oneshot;
+
 use crate::mailbox::Mailbox;
-use crate::system::{SystemContext, ActorBundle, Supervises, ChildGuard};
-
-use futures::future::FutureObj;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use tokio_sync::{oneshot, mpsc};
-use tokio_threadpool::Sender;
-
 use crate::response::Response;
-use std::sync::{Arc, Mutex};
-use crate::Supervisor;
-use std::collections::HashMap;
+use crate::supervisor::{ChildGuard, Supervisor};
+use crate::system_context::SystemContext;
 
 pub trait Message: Send + 'static {
     type Result;
@@ -60,7 +54,7 @@ pub struct ActorContext<A> where A: Actor {
     state: ActorState,
     mailbox: Mailbox<A>,
     pub(crate) system: SystemContext,
-    children: crate::system::ChildGuard<A>,
+    children: ChildGuard<A>,
 }
 
 impl<Me> ActorContext<Me> where Me: Actor {
