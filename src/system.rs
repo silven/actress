@@ -183,7 +183,9 @@ impl System {
         }
 
         //self.threadpool.shutdown_on_idle().wait();
-        self.tokio_runtime.run().expect("Could not run the runtime?");
+        self.tokio_runtime
+            .run()
+            .expect("Could not run the runtime?");
         println!("Done with system?");
     }
 

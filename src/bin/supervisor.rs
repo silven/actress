@@ -1,11 +1,11 @@
 #![feature(async_await)]
 
-use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
 
 use actress::{
     Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message, PanicData, Supervisor, System,
 };
-use std::time::Duration;
 
 impl Actor for FibberSup {
     fn stopped(&mut self) {
@@ -14,12 +14,14 @@ impl Actor for FibberSup {
 }
 
 struct FibberSup {
-    count: u64,
+    active_workers: HashSet<usize>,
 }
 
 impl FibberSup {
     fn new() -> Self {
-        FibberSup { count: 0 }
+        FibberSup {
+            active_workers: HashSet::new(),
+        }
     }
 }
 
@@ -31,7 +33,10 @@ impl Message for FibRequest {
 }
 
 #[derive(Debug)]
-struct FibReply(u64);
+struct FibReply {
+    worker: usize,
+    result: u64,
+}
 
 impl Message for FibReply {
     type Result = ();
@@ -47,7 +52,8 @@ impl Handle<FibRequest> for FibberSup {
             })
             .unwrap();
 
-        cx.stop();
+        //cx.stop();
+        self.active_workers.insert(slave.id());
         slave.send(msg);
     }
 }
@@ -69,23 +75,38 @@ impl Handle<FibRequest> for FibberWorker {
         std::thread::sleep(Duration::from_secs(2));
         // Send reply
         if msg.0 % 2 == 0 {
-            //cx.stop();
+            cx.stop();
             //panic!("Oh noes, this is a bad number..");
         }
-        self.master.send(FibReply(msg.0));
+        self.master.send(FibReply {
+            worker: cx.id(),
+            result: msg.0 + 1,
+        });
+        cx.stop();
     }
 }
 
 impl Handle<FibReply> for FibberSup {
     type Response = ();
     fn accept(&mut self, msg: FibReply, cx: &mut ActorContext<Self>) {
-        println!("Got reply from worker! {}", msg.0);
+        println!("Got reply from worker! {} ({})", msg.worker, msg.result);
+        self.active_workers.remove(&msg.worker);
+        if self.active_workers.is_empty() {
+            println!("Done waiting for workers.");
+            cx.stop();
+        }
     }
 }
 
 impl Supervisor<FibberWorker> for FibberSup {
     fn worker_stopped(&mut self, worker_id: usize, info: Option<PanicData>) {
         println!("Oh no! Worker with id {} stopped! {:?}", worker_id, info);
+
+        self.active_workers.remove(&worker_id);
+        if self.active_workers.is_empty() {
+            println!("Done waiting for workers.");
+            //cx.stop();
+        }
     }
 }
 

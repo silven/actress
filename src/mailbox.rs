@@ -172,7 +172,10 @@ where
 
     #[cfg(not(feature = "peek"))]
     pub(crate) fn new(actor_id: usize, inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
-        Mailbox { actor_id: actor_id, tx: inbox }
+        Mailbox {
+            actor_id: actor_id,
+            tx: inbox,
+        }
     }
 
     #[cfg(feature = "peek")]
