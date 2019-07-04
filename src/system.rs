@@ -8,7 +8,8 @@ use futures::future::Future;
 use futures::stream::StreamExt;
 use futures::Poll;
 use tokio_sync::mpsc;
-use tokio_threadpool::ThreadPool;
+//use tokio_threadpool::ThreadPool;
+use tokio::runtime::Runtime;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
 #[cfg(feature = "peek")]
@@ -20,7 +21,7 @@ use crate::system_context::SystemContext;
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 pub struct System {
-    threadpool: ThreadPool,
+    tokio_runtime: Runtime,
     context: SystemContext,
 }
 
@@ -138,11 +139,12 @@ where
 
 impl System {
     pub fn new() -> Self {
-        let pool = tokio_threadpool::Builder::new().pool_size(8).build();
+        let rt = Runtime::new().expect("Could not construct tokio runtime");
 
-        let spawner = pool.sender().clone();
+        //let spawner = pool.sender().clone();
+        let spawner = rt.handle();
         System {
-            threadpool: pool,
+            tokio_runtime: rt,
             context: SystemContext::new(spawner),
         }
     }
@@ -168,7 +170,7 @@ impl System {
         self.context.find(name)
     }
 
-    pub fn run_until_completion(self) {
+    pub fn run_until_completion(mut self) {
         println!("Waiting for system to stop...");
 
         match self.context.registry.lock() {
@@ -180,7 +182,8 @@ impl System {
             Err(_) => panic!("Could not terminate services..."),
         }
 
-        self.threadpool.shutdown_on_idle().wait();
+        //self.threadpool.shutdown_on_idle().wait();
+        self.tokio_runtime.run().expect("Could not run the runtime?");
         println!("Done with system?");
     }
 

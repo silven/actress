@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use tokio_sync::mpsc;
-use tokio_threadpool::Sender;
+//use tokio_threadpool::Sender;
 
 use crate::internal_handlers::{StoppableActor, Supervises};
 use crate::supervisor::SupervisorGuard;
@@ -12,13 +12,13 @@ use crate::{Actor, ActorContext, Mailbox};
 
 #[derive(Clone)]
 pub(crate) struct SystemContext {
-    pub(crate) spawner: Sender,
+    pub(crate) spawner: tokio::runtime::current_thread::Handle,
     pub(crate) registry: Arc<Mutex<HashMap<String, Box<dyn StoppableActor>>>>,
     id_counter: usize,
 }
 
 impl SystemContext {
-    pub(crate) fn new(spawner: Sender) -> Self {
+    pub(crate) fn new(spawner: tokio::runtime::current_thread::Handle) -> Self {
         SystemContext {
             spawner: spawner,
             registry: Arc::new(Mutex::new(HashMap::new())),
