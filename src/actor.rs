@@ -4,7 +4,7 @@ use crate::supervisor::{ChildGuard, Supervisor};
 use crate::system_context::SystemContext;
 
 pub trait Message: Send + 'static {
-    type Result;
+    type Result: Send;
 }
 
 pub trait Handle<M>

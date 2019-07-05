@@ -42,6 +42,7 @@ where
 /// If there is panic data, there was a crash. If there is none, it stopped gracefully.
 pub(crate) struct WorkerStopped<W: Actor>(usize, Option<PanicData>, PhantomData<*const W>);
 unsafe impl<W> Send for WorkerStopped<W> where W: Actor {}
+unsafe impl<W> Sync for WorkerStopped<W> where W: Actor {}
 
 impl<W> Message for WorkerStopped<W>
 where

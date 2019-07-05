@@ -32,10 +32,14 @@ where
     M::Result: Send,
 {
     fn handle(self, spawner: Handle, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+        println!("I'm now in the async handle fn");
         spawner.spawn(async move {
+            println!("I'm now in the async handle block, waiting");
             let result: <M as Message>::Result = self.0.await;
+            println!("I'm now in the async handle fn, got a result");
             if let Some(tx) = reply_to {
                 tx.send(Some(result));
+                println!("I'm now in the async handle fn, sent reply!");
             }
         });
     }
@@ -70,16 +74,24 @@ macro_rules! simple_response {
 //Unfortunate that we can't blanket impl these
 simple_response!(());
 
+simple_response!(bool);
+
+simple_response!(f32);
+simple_response!(f64);
+
 simple_response!(u8);
 simple_response!(u16);
 simple_response!(u32);
 simple_response!(u64);
+simple_response!(u128);
 simple_response!(usize);
 
 simple_response!(i8);
 simple_response!(i16);
 simple_response!(i32);
 simple_response!(i64);
+simple_response!(i128);
 simple_response!(isize);
 
+simple_response!(char);
 simple_response!(String);
