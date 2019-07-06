@@ -5,6 +5,7 @@ mod actor;
 mod internal_handlers;
 mod mailbox;
 mod response;
+mod http;
 mod supervisor;
 mod system;
 mod system_context;

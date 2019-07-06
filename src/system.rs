@@ -5,24 +5,29 @@ use std::task::Context;
 
 use futures::executor::block_on;
 use futures::future::Future;
-use futures::stream::StreamExt;
 use futures::Poll;
-use tokio_sync::mpsc;
+use futures::stream::StreamExt;
 //use tokio_threadpool::ThreadPool;
 use tokio::runtime::Runtime;
+use tokio_sync::mpsc;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
+use crate::http::Router;
+use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
 #[cfg(feature = "peek")]
 use crate::mailbox::PeekGrab;
-use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
-use crate::supervisor::{PanicHookGuard, SupervisorGuard};
+use crate::supervisor::SupervisorGuard;
 use crate::system_context::SystemContext;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 pub struct System {
     tokio_runtime: Runtime,
     context: SystemContext,
+    http_started: bool,
+    json_router: Arc<Router>,
 }
 
 // TODO: Is this safe? It should be, the actor bundle itself should never move.
@@ -36,6 +41,7 @@ where
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
         // Reset the hook after we're done
+        /*
         let _hook_guard = PanicHookGuard::new(std::panic::take_hook());
 
         let sup_guard = self.supervisor.guard();
@@ -47,6 +53,7 @@ where
                 sup.notify_worker_stopped(my_id, Some(info.into()));
             };
         }));
+        */
 
         // TODO: this loop shouldn't have to be here?
         loop {
@@ -146,6 +153,25 @@ impl System {
         System {
             tokio_runtime: rt,
             context: SystemContext::new(spawner),
+            http_started: false,
+            json_router: Arc::new(Router::new()),
+        }
+    }
+
+    pub fn serve<M, A>(&mut self, path: &str, mailbox: Mailbox<A>)
+        where
+            M: Message + DeserializeOwned + Send + Sync,
+            M::Result: Serialize + Send + Sync,
+            A: Actor + Handle<M>,
+    {
+        // ?
+
+        self.json_router.serve(path, Box::new(mailbox));
+
+        if !self.http_started {
+            self.http_started = true;
+
+            self.spawn_future(crate::http::serve_it(Arc::downgrade(&self.json_router)));
         }
     }
 

@@ -25,7 +25,6 @@ pub(crate) struct Envelope<A: Actor>(Box<dyn EnvelopeProxy<Actor = A>>);
 unsafe impl<A> Send for Envelope<A> where A: Actor {}
 unsafe impl<A> Sync for Envelope<A> where A: Actor {}
 
-
 struct EnvelopeInner<A, M>
 where
     M: Message,
@@ -291,11 +290,14 @@ where
         };
     }
 
-    pub fn ask_nicely<M>(&self, msg: M) -> Result<oneshot::Receiver<Option<M::Result>>, MailboxAskError>
-        where
-            A: Actor + Handle<M>,
-            M: Message + Send + Sync,
-            M::Result: Send + Sync,
+    pub fn ask_nicely<M>(
+        &self,
+        msg: M,
+    ) -> Result<oneshot::Receiver<Option<M::Result>>, MailboxAskError>
+    where
+        A: Actor + Handle<M>,
+        M: Message + Send + Sync,
+        M::Result: Send + Sync,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, reply_tx);
