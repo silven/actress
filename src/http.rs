@@ -172,14 +172,15 @@ async fn serve_request(routes: Weak<Router>, req: Request<Body>) -> Result<Respo
     let (parts, body) = req.into_parts();
     let body_bytes = collect_body(&parts.headers, body).await?;
 
-    if let Ok(json_value) = serde_json::from_slice(&body_bytes) {
-        if let Some(routes) = routes.upgrade() {
-            if let Some(handler) = routes.route(parts.uri.path()) {
-                let json = handler.handle_json(json_value).await?;
-                let body = serde_json::to_string(&json).unwrap();
-                return Ok(Response::new(Body::from(body)));
-            }
-        }
-    }
-    Ok(Response::builder().status(404).body(Body::from("No route")).unwrap())
+    let json_value = serde_json::from_slice(&body_bytes)?;
+
+    let routes = routes.upgrade().ok_or("no routing table")?;
+
+    let handler = routes.route(parts.uri.path()).ok_or("no route")?;
+
+    let json = handler.handle_json(json_value).await?;
+
+    let body = serde_json::to_string(&json)?;
+
+    Ok(Response::new(Body::from(body)))
 }
