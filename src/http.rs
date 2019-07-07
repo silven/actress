@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 
 use crate::{Actor, Handle, Mailbox, Message};
 use std::sync::{Weak, RwLock, Arc};
+use std::error::Error;
 
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
@@ -88,7 +89,7 @@ fn webbox<A, M>(mailbox: Mailbox<A>) -> Box<dyn JsonHandler>
 }
 
 
-async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, ()> {
+async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, &'static str> {
     let c_len: usize = headers
         .get(CONTENT_LENGTH)
         .and_then(|x| x.to_str().ok())
@@ -107,7 +108,7 @@ async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, ()
             }
             Err(err) => {
                 eprintln!("Body Error: {}", err);
-                return Err(());
+                return Err("body error");
             }
         }
     }
@@ -151,31 +152,13 @@ pub(crate) async fn serve_it(routes: Weak<Router>) {
                     println!("Got a request: {:?}", req);
                     let routes = routes.clone();
                     async move {
-                        let (parts, body) = req.into_parts();
-                        let body_bytes = collect_body(&parts.headers, body).await.unwrap();
-
-                        let resp_body = if let Ok(json_value) = serde_json::from_slice(&body_bytes)
-                        {
-                            if let Some(routes) = routes.upgrade() {
-                                match routes.route(parts.uri.path()) {
-                                    Some(handler) => {
-                                        let fut = handler.handle_json(json_value);
-                                        match fut.await {
-                                            Ok(json) => Body::from(json.to_string()),
-                                            Err(msg) => Body::from(msg),
-                                        }
-                                    }
-                                    None => Body::from("No route"),
-                                }
-                            } else {
-                                // Hmm...
-                                Body::from("No routes at all")
+                        match serve_request(routes, req).await {
+                            Ok(resp) => Ok::<_, hyper::error::Error>(resp),
+                            Err(msg) => {
+                                let desc = msg.description().to_owned();
+                                Ok(Response::builder().status(500).body(Body::from(desc)).unwrap())
                             }
-                        } else {
-                            Body::from("Could not deserialize!")
-                        };
-
-                        return Ok::<_, hyper::Error>(Response::new(resp_body));
+                        }
                     }
                 }))
             }
@@ -183,4 +166,20 @@ pub(crate) async fn serve_it(routes: Weak<Router>) {
 
         Server::bind(&addr).serve(mk_service).await;
     }
+}
+
+async fn serve_request(routes: Weak<Router>, req: Request<Body>) -> Result<Response<Body>, Box<dyn Error>> {
+    let (parts, body) = req.into_parts();
+    let body_bytes = collect_body(&parts.headers, body).await?;
+
+    if let Ok(json_value) = serde_json::from_slice(&body_bytes) {
+        if let Some(routes) = routes.upgrade() {
+            if let Some(handler) = routes.route(parts.uri.path()) {
+                let json = handler.handle_json(json_value).await?;
+                let body = serde_json::to_string(&json).unwrap();
+                return Ok(Response::new(Body::from(body)));
+            }
+        }
+    }
+    Ok(Response::builder().status(404).body(Body::from("No route")).unwrap())
 }

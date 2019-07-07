@@ -43,7 +43,9 @@ where
         // Reset the hook after we're done
         /*
         let _hook_guard = PanicHookGuard::new(std::panic::take_hook());
-
+        */
+        // TODO: the panic hook is a global resource, we should set a global one that reads
+        // thread local data about the currently running actor.
         let sup_guard = self.supervisor.guard();
         let my_id = self.inner.id();
         std::panic::set_hook(Box::new(move |info| {
@@ -53,7 +55,6 @@ where
                 sup.notify_worker_stopped(my_id, Some(info.into()));
             };
         }));
-        */
 
         // TODO: this loop shouldn't have to be here?
         loop {
@@ -72,6 +73,8 @@ where
                     match process_result {
                         Ok(()) => { /* all is well */ }
                         Err(_) => {
+                            // Do not call Actor::stopped here, because
+                            // the actor might be in a bad state
                             self.close_and_stop();
                             return Poll::Ready(());
                         }
@@ -158,16 +161,14 @@ impl System {
         }
     }
 
+    // TODO, can I get rid of the A?, like, Mailbox: impl Accepts<M> or something?
     pub fn serve<M, A>(&mut self, path: &str, mailbox: Mailbox<A>)
         where
             M: Message + DeserializeOwned + Send + Sync,
             M::Result: Serialize + Send + Sync,
             A: Actor + Handle<M>,
     {
-        // ?
-
         self.json_router.serve(path, Box::new(mailbox));
-
         if !self.http_started {
             self.http_started = true;
 
@@ -199,6 +200,7 @@ impl System {
     pub fn run_until_completion(mut self) {
         println!("Waiting for system to stop...");
 
+        // TODO; Couldn't I do this by just dropping these mailboxes?
         match self.context.registry.lock() {
             Ok(registry) => {
                 for service in registry.values() {
