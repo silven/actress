@@ -10,7 +10,7 @@ use crate::actor::{Actor, Handle, Message};
 use crate::response::Response;
 use crate::system::ActorBundle;
 
-type AnyMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
+type AnyMap = HashMap<TypeId, Arc<dyn Any + Send + Sync + 'static>>;
 
 pub(crate) trait EnvelopeProxy {
     type Actor: Actor;
@@ -23,7 +23,7 @@ pub(crate) struct Envelope<A: Actor>(Box<dyn EnvelopeProxy<Actor = A>>);
 
 // This is safe because the Actor isn't really there.
 unsafe impl<A> Send for Envelope<A> where A: Actor {}
-unsafe impl<A> Sync for Envelope<A> where A: Actor {}
+//unsafe impl<A> Sync for Envelope<A> where A: Actor {}
 
 struct EnvelopeInner<A, M>
 where
@@ -38,15 +38,14 @@ where
 #[cfg(feature = "peek")]
 pub(crate) enum PeekGrab<M: Message> {
     Peek(Box<dyn Fn(&M) + Send + Sync + 'static>),
-    Alter(Box<dyn Fn(M) -> M + Send + Sync + 'static>),
+    Alter(Box<dyn Fn(M) -> M + Send + Sync +  'static>),
     Grab(Box<dyn Fn(M) -> M::Result + Send + Sync + 'static>),
 }
 
 impl<A, M> EnvelopeProxy for EnvelopeInner<A, M>
 where
     A: Actor + Handle<M>,
-    M: Message + Send + Sync,
-    M::Result: Send + Sync,
+    M: Message,
 {
     type Actor = A;
 
@@ -93,8 +92,7 @@ where
     fn new<M>(msg: M) -> Self
     where
         A: Handle<M>,
-        M: Message + Send + Sync,
-        M::Result: Send + Sync,
+        M: Message,
     {
         Envelope(Box::new(EnvelopeInner {
             act: PhantomData,
@@ -106,8 +104,7 @@ where
     fn with_reply<M>(msg: M, reply_to: oneshot::Sender<Option<M::Result>>) -> Self
     where
         A: Handle<M>,
-        M: Message + Send + Sync,
-        M::Result: Send + Sync,
+        M: Message,
     {
         Envelope(Box::new(EnvelopeInner {
             act: PhantomData,
@@ -203,8 +200,7 @@ where
     pub fn send<M>(&self, msg: M) -> Result<(), MailboxSendError>
     where
         A: Actor + Handle<M>,
-        M: Message + Send + Sync,
-        M::Result: Send + Sync,
+        M: Message
     {
         let env = Envelope::new(msg);
         let mut tx = self.tx.clone();
@@ -273,8 +269,7 @@ where
     pub fn ask<M>(&self, msg: M) -> Result<M::Result, MailboxAskError>
     where
         A: Actor + Handle<M>,
-        M: Message + Send + Sync,
-        M::Result: Send + Sync,
+        M: Message,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, reply_tx);
@@ -296,8 +291,7 @@ where
     ) -> Result<oneshot::Receiver<Option<M::Result>>, MailboxAskError>
     where
         A: Actor + Handle<M>,
-        M: Message + Send + Sync,
-        M::Result: Send + Sync,
+        M: Message,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, reply_tx);
@@ -312,8 +306,7 @@ where
     pub async fn ask_async<M>(&self, msg: M) -> Result<M::Result, MailboxAskError>
     where
         A: Actor + Handle<M>,
-        M: Message + Send + Sync,
-        M::Result: Send + Sync,
+        M: Message,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         let env = Envelope::with_reply(msg, reply_tx);

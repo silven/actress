@@ -13,28 +13,28 @@ use serde::de::DeserializeOwned;
 use crate::{Actor, Handle, Mailbox, Message};
 use std::thread::JoinHandle;
 
-type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
+type PBF<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
-pub(crate) trait JsonHandler: Send + Sync + 'static {
+pub(crate) trait JsonHandler: 'static {
     fn handle_json(&self, req: serde_json::Value) -> PBF<Result<serde_json::Value, &'static str>>;
 }
 
-fn ff<R, F: Future<Output = R> + Send + Sync + 'static>(fut: F) -> PBF<R> {
+fn ff<R, F: Future<Output = R> + 'static>(fut: F) -> PBF<R> {
     Box::pin(fut)
 }
 
 pub(crate) trait JsonMailbox<M>
     where
         M: Message + DeserializeOwned,
-        M::Result: Send + Serialize,
+        M::Result: Serialize,
 {
     fn handle(&self, msg: M) -> PBF<Result<M::Result, &'static str>>;
 }
 
-impl<M> JsonHandler for Box<dyn JsonMailbox<M> + Send + Sync + 'static>
+impl<M> JsonHandler for Box<dyn JsonMailbox<M> + 'static>
     where
-        M: Message + DeserializeOwned + Send,
-        M::Result: Send + Serialize,
+        M: Message + DeserializeOwned,
+        M::Result: Serialize,
 {
     fn handle_json(&self, json: serde_json::Value) -> PBF<Result<serde_json::Value, &'static str>> {
         if let Ok(data) = serde_json::from_value(json) {
@@ -56,8 +56,8 @@ impl<M> JsonHandler for Box<dyn JsonMailbox<M> + Send + Sync + 'static>
 
 impl<A, M> JsonMailbox<M> for Mailbox<A>
     where
-        M: Message + DeserializeOwned + Send + Sync,
-        M::Result: Send + Sync + Serialize,
+        M: Message + DeserializeOwned,
+        M::Result: Serialize,
         A: Actor + Handle<M>,
 {
     fn handle(&self, msg: M) -> PBF<Result<M::Result, &'static str>> {
@@ -100,8 +100,9 @@ impl Router {
         Router { routes: RwLock::new(HashMap::new()) }
     }
 
-    pub(crate) fn serve<M>(&self, path: &str, mailbox: Box<dyn JsonMailbox<M> + Send + Sync + 'static>)
-        where M: Message + DeserializeOwned, M::Result: Serialize {
+    pub(crate) fn serve<M>(&self, path: &str, mailbox: Box<dyn JsonMailbox<M> + 'static>)
+        where M: Message + DeserializeOwned,
+              M::Result: Serialize {
         if let Ok(mut lock) = self.routes.write() {
             lock.insert(path.to_owned(), Arc::new(mailbox));
         }
@@ -116,24 +117,27 @@ impl Router {
     }
 }
 
-pub(crate) fn serve_it(routes: Weak<Router>) -> std::thread::JoinHandle<()> {
+pub(crate) fn serve_it(router: Weak<Router>) -> std::thread::JoinHandle<()> {
     let hyper_thread: JoinHandle<()> = std::thread::spawn(|| {
         hyper::rt::run(async move {
             let addr = "127.0.0.1:12345".parse().unwrap();
 
             let mk_service = make_service_fn(move |_| {
-                let routes = routes.clone();
+                let router = router.clone();
                 async move {
                     Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                        let routes = routes.clone();
+                        let router = router.clone();
                         async move {
-                            match serve_request(routes, req).await {
+                            //Ok::<_, hyper::Error>(Response::builder().status(200).body(Body::from("hi!".to_owned())).unwrap())
+
+                            match serve_request(router, req).await {
                                 Ok(resp) => Ok::<_, hyper::error::Error>(resp),
                                 Err(msg) => {
                                     let desc = msg.description().to_owned();
                                     Ok(Response::builder().status(500).body(Body::from(desc)).unwrap())
                                 }
                             }
+
                         }
                     }))
                 }

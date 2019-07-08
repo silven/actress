@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::thread::JoinHandle;
 
-type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
+type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync + 'static>>;
 
 pub struct System {
     //tokio_runtime: Runtime,
@@ -169,8 +169,8 @@ impl System {
     // TODO, can I get rid of the A?, like, Mailbox: impl Accepts<M> or something?
     pub fn serve<M, A>(&mut self, path: &str, mailbox: Mailbox<A>)
         where
-            M: Message + DeserializeOwned + Send + Sync,
-            M::Result: Serialize + Send + Sync,
+            M: Message + DeserializeOwned,
+            M::Result: Serialize,
             A: Actor + Handle<M>,
     {
         self.json_router.serve(path, Box::new(mailbox));
