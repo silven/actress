@@ -2,13 +2,13 @@ use std::future::Future;
 use std::pin::Pin;
 
 use tokio_sync::oneshot;
-//use tokio_threadpool::Sender;
-use tokio::runtime::current_thread::Handle;
+use tokio_threadpool::Sender;
+//use tokio::runtime::current_thread::Handle;
 
 use crate::actor::Message;
 
 pub trait Response<M: Message> {
-    fn handle(self, spawner: Handle, reply_to: Option<oneshot::Sender<Option<M::Result>>>);
+    fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>);
 }
 
 pub struct SyncResponse<M: Message>(M::Result);
@@ -31,7 +31,7 @@ where
     M: Message,
     M::Result: Send,
 {
-    fn handle(self, spawner: Handle, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+    fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
         println!("I'm now in the async handle fn");
         spawner.spawn(async move {
             println!("I'm now in the async handle block, waiting");
@@ -49,7 +49,7 @@ impl<M> Response<M> for SyncResponse<M>
 where
     M: Message,
 {
-    fn handle(self, _: Handle, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+    fn handle(self, _: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
         if let Some(tx) = reply_to {
             tx.send(Some(self.0));
         }
@@ -62,7 +62,7 @@ macro_rules! simple_response {
         where
             M: Message<Result = $type>,
         {
-            fn handle(self, _: Handle, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+            fn handle(self, _: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
                 if let Some(tx) = reply_to {
                     tx.send(Some(self));
                 }

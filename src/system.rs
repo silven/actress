@@ -7,8 +7,8 @@ use futures::executor::block_on;
 use futures::future::Future;
 use futures::Poll;
 use futures::stream::StreamExt;
-//use tokio_threadpool::ThreadPool;
-use tokio::runtime::Runtime;
+use tokio_threadpool::ThreadPool;
+//use tokio::runtime::Runtime;
 use tokio_sync::mpsc;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
@@ -20,13 +20,16 @@ use crate::supervisor::SupervisorGuard;
 use crate::system_context::SystemContext;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::thread::JoinHandle;
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 pub struct System {
-    tokio_runtime: Runtime,
+    //tokio_runtime: Runtime,
+    thread_pool: ThreadPool,
     context: SystemContext,
-    http_started: bool,
+    //http_started: bool,
+    http_thread: Option<JoinHandle<()>>,
     json_router: Arc<Router>,
 }
 
@@ -149,14 +152,16 @@ where
 
 impl System {
     pub fn new() -> Self {
-        let rt = Runtime::new().expect("Could not construct tokio runtime");
+        //let rt = Runtime::new().expect("Could not construct tokio runtime");
+        let pool = ThreadPool::new();
 
-        //let spawner = pool.sender().clone();
-        let spawner = rt.handle();
+        //let spawner = rt.handle();
+        let spawner = pool.sender().clone();
         System {
-            tokio_runtime: rt,
+            //tokio_runtime: rt,
+            thread_pool: pool,
             context: SystemContext::new(spawner),
-            http_started: false,
+            http_thread: None,
             json_router: Arc::new(Router::new()),
         }
     }
@@ -169,10 +174,8 @@ impl System {
             A: Actor + Handle<M>,
     {
         self.json_router.serve(path, Box::new(mailbox));
-        if !self.http_started {
-            self.http_started = true;
-
-            self.spawn_future(crate::http::serve_it(Arc::downgrade(&self.json_router)));
+        if self.http_thread.is_none() {
+            self.http_thread = Some(crate::http::serve_it(Arc::downgrade(&self.json_router)));
         }
     }
 
@@ -210,10 +213,10 @@ impl System {
             Err(_) => panic!("Could not terminate services..."),
         }
 
-        //self.threadpool.shutdown_on_idle().wait();
-        self.tokio_runtime
+        self.thread_pool.shutdown_on_idle().wait();
+        /*self.thre
             .run()
-            .expect("Could not run the runtime?");
+            .expect("Could not run the runtime?");*/
         println!("Done with system?");
     }
 

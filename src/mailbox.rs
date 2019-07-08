@@ -290,7 +290,7 @@ where
         };
     }
 
-    pub fn ask_nicely<M>(
+    pub(crate) fn ask_future<M>(
         &self,
         msg: M,
     ) -> Result<oneshot::Receiver<Option<M::Result>>, MailboxAskError>

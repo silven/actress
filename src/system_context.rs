@@ -9,16 +9,19 @@ use crate::internal_handlers::{StoppableActor, Supervises};
 use crate::supervisor::SupervisorGuard;
 use crate::system::ActorBundle;
 use crate::{Actor, ActorContext, Mailbox};
+use tokio_threadpool::Sender;
 
 #[derive(Clone)]
 pub(crate) struct SystemContext {
-    pub(crate) spawner: tokio::runtime::current_thread::Handle,
+    //pub(crate) spawner: tokio::runtime::current_thread::Handle,
+    pub(crate) spawner: Sender,
     pub(crate) registry: Arc<Mutex<HashMap<String, Box<dyn StoppableActor>>>>,
     id_counter: usize,
 }
 
 impl SystemContext {
-    pub(crate) fn new(spawner: tokio::runtime::current_thread::Handle) -> Self {
+    //pub(crate) fn new(spawner: tokio::runtime::current_thread::Handle) -> Self {
+    pub(crate) fn new(spawner: Sender) -> Self {
         SystemContext {
             spawner: spawner,
             registry: Arc::new(Mutex::new(HashMap::new())),

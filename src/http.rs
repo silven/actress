@@ -1,18 +1,17 @@
-use std::any::TypeId;
 use std::collections::HashMap;
+use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, RwLock, Weak};
 
 use hyper::{Body, HeaderMap, Request, Response, Server};
-use hyper::header::{CONTENT_LENGTH};
+use hyper::header::CONTENT_LENGTH;
 use hyper::service::{make_service_fn, service_fn};
-use serde::{Serialize};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{Actor, Handle, Mailbox, Message};
-use std::sync::{Weak, RwLock, Arc};
-use std::error::Error;
-
+use std::thread::JoinHandle;
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 
@@ -62,55 +61,32 @@ impl<A, M> JsonMailbox<M> for Mailbox<A>
         A: Actor + Handle<M>,
 {
     fn handle(&self, msg: M) -> PBF<Result<M::Result, &'static str>> {
-        println!("Inside AcceptsHttp for {:?}", TypeId::of::<M>());
-
-        if let Ok(reply_fut) = self.ask_nicely(msg) {
+        if let Ok(reply_fut) = self.ask_future(msg) {
             ff(async move {
                 match reply_fut.await {
                     Ok(Some(r)) => Ok(r),
                     Ok(None) => Err("Message was dropped"),
-                    Err(_) => Err("Could not recv"),
+                    Err(_) => Err("Could not recv reply"),
                 }
             })
         } else {
-            Box::pin(futures::future::err("Could not send"))
+            Box::pin(futures::future::err("Could not send request"))
         }
     }
 }
 
-fn webbox<A, M>(mailbox: Mailbox<A>) -> Box<dyn JsonHandler>
-    where
-        A: Actor + Handle<M>,
-        M: Message + DeserializeOwned + Send + Sync,
-        M::Result: Send + Serialize + Sync,
-{
-    // I don't like this double box thingy
-    Box::new(Box::new(mailbox) as Box<dyn JsonMailbox<M> + Send + Sync + 'static>)
-}
-
-
-async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, &'static str> {
+async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, hyper::Error> {
+    // Much hassle to read the content-length header
     let c_len: usize = headers
         .get(CONTENT_LENGTH)
         .and_then(|x| x.to_str().ok())
         .and_then(|x| x.parse().ok())
         .unwrap_or(128);
 
-    println!("This is the c_len {:?}", c_len);
-
     let mut buff = Vec::with_capacity(c_len);
-
     while let Some(next) = body.next().await {
-        match next {
-            Ok(chunk) => {
-                println!("Read a chunk: {:?}", chunk);
-                buff.extend_from_slice(chunk.as_ref());
-            }
-            Err(err) => {
-                eprintln!("Body Error: {}", err);
-                return Err("body error");
-            }
-        }
+        let chunk = next?;
+        buff.extend_from_slice(chunk.as_ref());
     }
     Ok(buff)
 }
@@ -140,32 +116,34 @@ impl Router {
     }
 }
 
-pub(crate) async fn serve_it(routes: Weak<Router>) {
-    {
-        let addr = "127.0.0.1:12345".parse().unwrap();
+pub(crate) fn serve_it(routes: Weak<Router>) -> std::thread::JoinHandle<()> {
+    let hyper_thread: JoinHandle<()> = std::thread::spawn(|| {
+        hyper::rt::run(async move {
+            let addr = "127.0.0.1:12345".parse().unwrap();
 
-        let mk_service = make_service_fn(move |t| {
-            let routes = routes.clone();
-            println!("Got a target: {:?}", t);
-            async move {
-                Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                    println!("Got a request: {:?}", req);
-                    let routes = routes.clone();
-                    async move {
-                        match serve_request(routes, req).await {
-                            Ok(resp) => Ok::<_, hyper::error::Error>(resp),
-                            Err(msg) => {
-                                let desc = msg.description().to_owned();
-                                Ok(Response::builder().status(500).body(Body::from(desc)).unwrap())
+            let mk_service = make_service_fn(move |_| {
+                let routes = routes.clone();
+                async move {
+                    Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
+                        let routes = routes.clone();
+                        async move {
+                            match serve_request(routes, req).await {
+                                Ok(resp) => Ok::<_, hyper::error::Error>(resp),
+                                Err(msg) => {
+                                    let desc = msg.description().to_owned();
+                                    Ok(Response::builder().status(500).body(Body::from(desc)).unwrap())
+                                }
                             }
                         }
-                    }
-                }))
-            }
-        });
+                    }))
+                }
+            });
 
-        Server::bind(&addr).serve(mk_service).await;
-    }
+            Server::bind(&addr).serve(mk_service).await;
+        });
+    });
+
+    hyper_thread
 }
 
 async fn serve_request(routes: Weak<Router>, req: Request<Body>) -> Result<Response<Body>, Box<dyn Error>> {
