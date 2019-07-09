@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc};
@@ -107,8 +106,13 @@ impl Actor for Router {}
 
 struct JsonMessage(String, serde_json::Value);
 
+enum HyperResponse {
+    NotFound,
+    Json(serde_json::Value),
+}
+
 impl Message for JsonMessage {
-    type Result = serde_json::Value;
+    type Result = HyperResponse;
 }
 
 impl Handle<JsonMessage> for Router {
@@ -120,12 +124,13 @@ impl Handle<JsonMessage> for Router {
 
         AsyncResponse::from_future(async move {
             if let Some(handler) = handler {
+                // TODO: Add a tokio timer/timeout here
                 match handler.handle_json(msg.1).await {
-                    Ok(reply) => reply,
-                    Err(e) => serde_json::Value::String(e.to_owned())
+                    Ok(reply) => HyperResponse::Json(reply),
+                    Err(e) => HyperResponse::Json(serde_json::Value::String(e.to_owned())),
                 }
             } else {
-                serde_json::Value::String("NO ROUTE".to_owned())
+                HyperResponse::NotFound
             }
         })
     }
@@ -147,6 +152,8 @@ impl<M> Handle<Serve<M>> for Router where M: Message + DeserializeOwned, M::Resu
     }
 }
 
+// Start hyper thread
+
 pub(crate) fn serve_it(router: Mailbox<Router>) -> std::thread::JoinHandle<()> {
     let hyper_thread: JoinHandle<()> = std::thread::spawn(|| {
         // Start separate tokio runtime here, just for hyper
@@ -159,22 +166,11 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> std::thread::JoinHandle<()> {
                     Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
                         let router = router.copy();
                         async move {
-                            //Ok::<_, hyper::Error>(Response::builder().status(200).body(Body::from("hi!".to_owned())).unwrap())
-                            let msg = deserialize_body(req).await.unwrap();
-                            Ok::<_, hyper::error::Error>(match router.ask_async(msg).await {
-                                Ok(json) => {
-                                    let as_string = serde_json::to_string(&json).unwrap();
-                                    Response::builder().status(200).body(Body::from(as_string)).unwrap()
-                                },
-                                Err(_) => {
-                                    Response::builder().status(500).body(Body::from("Could not")).unwrap()
-                                }
-                            })
+                            Ok::<_, hyper::Error>(serve_request(router, req).await)
                         }
                     }))
                 }
             });
-
             Server::bind(&addr).serve(mk_service).await;
         });
     });
@@ -182,29 +178,32 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> std::thread::JoinHandle<()> {
     hyper_thread
 }
 
-async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, Box<dyn Error>> {
-    let (parts, body) = req.into_parts();
-    let body_bytes = collect_body(&parts.headers, body).await?;
+async fn serve_request(router: Mailbox<Router>, req: Request<Body>) -> Response<Body> {
+    match deserialize_body(req).await {
+        Ok(msg) => match router.ask_async(msg).await {
+            Ok(to_resp) => match to_resp {
+                HyperResponse::Json(json) => {
+                    let as_string = serde_json::to_string(&json).unwrap();
+                    Response::builder().status(200).body(Body::from(as_string)).unwrap()
+                },
+                HyperResponse::NotFound => {
+                    Response::builder().status(404).body(Body::from("No route")).unwrap()
+                }
+            }
+            Err(e) => {
+                Response::builder().status(500).body(Body::from("Internal Server Error")).unwrap()
+            }
+        },
+        Err(err) => {
+            Response::builder().status(500).body(Body::from(err)).unwrap()
+        }
+    }
+}
 
-    let json_value = serde_json::from_slice(&body_bytes)?;
+// TODO: Why can't this function return a Box<dyn Error>?
+async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, &'static str> {
+    let (parts, body) = req.into_parts();
+    let body_bytes = collect_body(&parts.headers, body).await.or(Err("Could not read body"))?;
+    let json_value = serde_json::from_slice(&body_bytes).or(Err("Could not deserialize"))?;
     Ok(JsonMessage(parts.uri.path().to_owned(), json_value))
 }
-
-/*
-async fn serve_request(routes: Weak<Router>, req: Request<Body>) -> Result<Response<Body>, Box<dyn Error>> {
-    let (parts, body) = req.into_parts();
-    let body_bytes = collect_body(&parts.headers, body).await?;
-
-    let json_value = serde_json::from_slice(&body_bytes)?;
-
-    let routes = routes.upgrade().ok_or("no routing table")?;
-
-    let handler = routes.route(parts.uri.path()).ok_or("no route")?;
-
-    let json = handler.handle_json(json_value).await?;
-
-    let body = serde_json::to_string(&json)?;
-
-    Ok(Response::new(Body::from(body)))
-}
-*/
