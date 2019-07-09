@@ -35,10 +35,10 @@ where
     reply: Option<oneshot::Sender<Option<M::Result>>>,
 }
 
-#[cfg(feature = "peek")]
+#[cfg(feature = "actress_peek")]
 pub(crate) enum PeekGrab<M: Message> {
     Peek(Box<dyn Fn(&M) + Send + Sync + 'static>),
-    Alter(Box<dyn Fn(M) -> M + Send + Sync +  'static>),
+    Alter(Box<dyn Fn(M) -> M + Send + Sync + 'static>),
     Grab(Box<dyn Fn(M) -> M::Result + Send + Sync + 'static>),
 }
 
@@ -52,7 +52,7 @@ where
     fn accept(&mut self, actor: &mut ActorBundle<Self::Actor>) {
         let mut msg = self.msg.take().unwrap();
 
-        #[cfg(feature = "peek")]
+        #[cfg(feature = "actress_peek")]
         {
             if let Some(arc) = actor.get_listener::<M>() {
                 match *arc {
@@ -134,7 +134,7 @@ where
 {
     actor_id: usize,
     tx: mpsc::UnboundedSender<Envelope<A>>,
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     listeners: Weak<Mutex<AnyMap>>,
 }
 
@@ -154,7 +154,7 @@ impl<A> Mailbox<A>
 where
     A: Actor,
 {
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub(crate) fn new(
         actor_id: usize,
         inbox: mpsc::UnboundedSender<Envelope<A>>,
@@ -171,7 +171,7 @@ where
         self.actor_id
     }
 
-    #[cfg(not(feature = "peek"))]
+    #[cfg(not(feature = "actress_peek"))]
     pub(crate) fn new(actor_id: usize, inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
         Mailbox {
             actor_id: actor_id,
@@ -179,7 +179,7 @@ where
         }
     }
 
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub fn copy(&self) -> Self {
         Mailbox {
             actor_id: self.actor_id,
@@ -188,7 +188,7 @@ where
         }
     }
 
-    #[cfg(not(feature = "peek"))]
+    #[cfg(not(feature = "actress_peek"))]
     pub fn copy(&self) -> Self {
         Mailbox {
             actor_id: self.actor_id,
@@ -199,7 +199,7 @@ where
     pub fn send<M>(&self, msg: M) -> Result<(), MailboxSendError>
     where
         A: Actor + Handle<M>,
-        M: Message
+        M: Message,
     {
         let env = Envelope::new(msg);
         let mut tx = self.tx.clone();
@@ -209,7 +209,7 @@ where
         }
     }
 
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub fn peek<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -219,7 +219,7 @@ where
         self.add_listener(PeekGrab::Peek(Box::new(handler)));
     }
 
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub fn alter<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -229,7 +229,7 @@ where
         self.add_listener(PeekGrab::Alter(Box::new(handler)));
     }
 
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub fn grab<M, F>(&self, handler: F)
     where
         A: Actor + Handle<M>,
@@ -239,7 +239,7 @@ where
         self.add_listener(PeekGrab::Grab(Box::new(handler)));
     }
 
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub fn clear_listener<M>(&self)
     where
         A: Actor + Handle<M>,
@@ -252,7 +252,7 @@ where
         }
     }
 
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     fn add_listener<M>(&self, listener: PeekGrab<M>)
     where
         A: Actor + Handle<M>,

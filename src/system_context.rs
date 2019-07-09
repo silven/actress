@@ -3,13 +3,14 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use tokio_sync::mpsc;
-//use tokio_threadpool::Sender;
+use tokio_threadpool::Sender;
 
 use crate::internal_handlers::{StoppableActor, Supervises};
 use crate::supervisor::SupervisorGuard;
 use crate::system::ActorBundle;
 use crate::{Actor, ActorContext, Mailbox};
-use tokio_threadpool::Sender;
+
+//use tokio_threadpool::Sender;
 
 #[derive(Clone)]
 pub(crate) struct SystemContext {
@@ -70,7 +71,7 @@ impl SystemContext {
         let (tx, rx) = mpsc::unbounded_channel();
         self.id_counter += 1;
 
-        #[cfg(feature = "peek")]
+        #[cfg(feature = "actress_peek")]
         {
             let listeners = Arc::new(Mutex::new(HashMap::new()));
             let mailbox = Mailbox::<A>::new(self.id_counter, tx, Arc::downgrade(&listeners));
@@ -92,7 +93,7 @@ impl SystemContext {
             }
         }
 
-        #[cfg(not(feature = "peek"))]
+        #[cfg(not(feature = "actress_peek"))]
         {
             let mailbox = Mailbox::<A>::new(self.id_counter, tx);
 

@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc};
-
-use hyper::{Body, HeaderMap, Request, Response, Server};
-use hyper::header::CONTENT_LENGTH;
-use hyper::service::{make_service_fn, service_fn};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-
-use crate::{Actor, Handle, Mailbox, Message, AsyncResponse, ActorContext};
+use std::sync::Arc;
 use std::thread::JoinHandle;
+
+use hyper::header::{HeaderValue, CONTENT_LENGTH, UPGRADE};
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -18,27 +18,23 @@ pub(crate) trait JsonHandler: Send + 'static {
     fn handle_json(&self, req: serde_json::Value) -> PBF<Result<serde_json::Value, &'static str>>;
 }
 
-fn ff<R, F: Future<Output = R> + Send + 'static>(fut: F) -> PBF<R> {
-    Box::pin(fut)
-}
-
 pub(crate) trait JsonMailbox<M>
-    where
-        M: Message + DeserializeOwned,
-        M::Result: Serialize,
+where
+    M: Message + DeserializeOwned,
+    M::Result: Serialize,
 {
     fn handle(&self, msg: M) -> PBF<Result<M::Result, &'static str>>;
 }
 
 impl<M> JsonHandler for Box<dyn JsonMailbox<M> + Send + Sync + 'static>
-    where
-        M: Message + DeserializeOwned,
-        M::Result: Serialize,
+where
+    M: Message + DeserializeOwned,
+    M::Result: Serialize,
 {
     fn handle_json(&self, json: serde_json::Value) -> PBF<Result<serde_json::Value, &'static str>> {
         if let Ok(data) = serde_json::from_value(json) {
             let actor_fut = self.handle(data);
-            ff(async move {
+            Box::pin(async move {
                 match actor_fut.await {
                     Ok(m) => match serde_json::to_value(m) {
                         Ok(value) => Ok(value),
@@ -54,14 +50,14 @@ impl<M> JsonHandler for Box<dyn JsonMailbox<M> + Send + Sync + 'static>
 }
 
 impl<A, M> JsonMailbox<M> for Mailbox<A>
-    where
-        M: Message + DeserializeOwned,
-        M::Result: Serialize,
-        A: Actor + Handle<M>,
+where
+    M: Message + DeserializeOwned,
+    M::Result: Serialize,
+    A: Actor + Handle<M>,
 {
     fn handle(&self, msg: M) -> PBF<Result<M::Result, &'static str>> {
         if let Ok(reply_fut) = self.ask_future(msg) {
-            ff(async move {
+            Box::pin(async move {
                 match reply_fut.await {
                     Ok(Some(r)) => Ok(r),
                     Ok(None) => Err("Message was dropped"),
@@ -96,7 +92,9 @@ pub struct Router {
 
 impl Router {
     pub fn new() -> Self {
-        Router { routes: HashMap::new() }
+        Router {
+            routes: HashMap::new(),
+        }
     }
 }
 
@@ -119,7 +117,7 @@ impl Handle<JsonMessage> for Router {
     type Response = AsyncResponse<JsonMessage>;
 
     fn accept(&mut self, msg: JsonMessage, cx: &mut ActorContext<Self>) -> Self::Response {
-        println!("Got request to {} containing {:?}", msg.0, msg.1);
+        //println!("Got request to {} containing {:?}", msg.0, msg.1);
         let handler = self.routes.get(&msg.0).cloned();
 
         AsyncResponse::from_future(async move {
@@ -138,13 +136,27 @@ impl Handle<JsonMessage> for Router {
 
 // Serve
 
-pub(crate) struct Serve<M>(pub(crate) String, pub(crate) Box<dyn JsonMailbox<M> + Send + Sync + 'static>) where M: Message, M::Result: Serialize;
+pub(crate) struct Serve<M>(
+    pub(crate) String,
+    pub(crate) Box<dyn JsonMailbox<M> + Send + Sync + 'static>,
+)
+where
+    M: Message,
+    M::Result: Serialize;
 
-impl<M> Message for Serve<M> where M: Message, M::Result: Serialize {
+impl<M> Message for Serve<M>
+where
+    M: Message,
+    M::Result: Serialize,
+{
     type Result = ();
 }
 
-impl<M> Handle<Serve<M>> for Router where M: Message + DeserializeOwned, M::Result: Serialize {
+impl<M> Handle<Serve<M>> for Router
+where
+    M: Message + DeserializeOwned,
+    M::Result: Serialize,
+{
     type Response = ();
 
     fn accept(&mut self, msg: Serve<M>, cx: &mut ActorContext<Self>) -> Self::Response {
@@ -166,7 +178,29 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> std::thread::JoinHandle<()> {
                     Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
                         let router = router.copy();
                         async move {
-                            Ok::<_, hyper::Error>(serve_request(router, req).await)
+                            if req.headers().contains_key(UPGRADE) {
+                                // TODO; Find out how to turn websocket object into channel
+                                hyper::rt::spawn(async move {
+                                    match req.into_body().on_upgrade().await {
+                                        Ok(upgraded) => {
+                                            println!("Got upgraded websocket: {:?}, now what to do with it?", upgraded);
+                                        }
+                                        Err(err) => {
+                                            println!("Could not upgrade websocket: {:?}", err);
+                                        }
+                                    }
+                                });
+
+                                Ok::<_, hyper::Error>(
+                                    Response::builder()
+                                        .status(StatusCode::SWITCHING_PROTOCOLS)
+                                        .header(UPGRADE, HeaderValue::from_static("websocket"))
+                                        .body(Body::empty())
+                                        .unwrap(),
+                                )
+                            } else {
+                                Ok::<_, hyper::Error>(serve_request(router, req).await)
+                            }
                         }
                     }))
                 }
@@ -184,26 +218,34 @@ async fn serve_request(router: Mailbox<Router>, req: Request<Body>) -> Response<
             Ok(to_resp) => match to_resp {
                 HyperResponse::Json(json) => {
                     let as_string = serde_json::to_string(&json).unwrap();
-                    Response::builder().status(200).body(Body::from(as_string)).unwrap()
-                },
-                HyperResponse::NotFound => {
-                    Response::builder().status(404).body(Body::from("No route")).unwrap()
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::from(as_string))
+                        .unwrap()
                 }
-            }
-            Err(e) => {
-                Response::builder().status(500).body(Body::from("Internal Server Error")).unwrap()
-            }
+                HyperResponse::NotFound => Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("No route"))
+                    .unwrap(),
+            },
+            Err(_) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Internal Server Error"))
+                .unwrap(),
         },
-        Err(err) => {
-            Response::builder().status(500).body(Body::from(err)).unwrap()
-        }
+        Err(err) => Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from(err))
+            .unwrap(),
     }
 }
 
 // TODO: Why can't this function return a Box<dyn Error>?
 async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, &'static str> {
     let (parts, body) = req.into_parts();
-    let body_bytes = collect_body(&parts.headers, body).await.or(Err("Could not read body"))?;
+    let body_bytes = collect_body(&parts.headers, body)
+        .await
+        .or(Err("Could not read body"))?;
     let json_value = serde_json::from_slice(&body_bytes).or(Err("Could not deserialize"))?;
     Ok(JsonMessage(parts.uri.path().to_owned(), json_value))
 }

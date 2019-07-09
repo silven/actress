@@ -2,7 +2,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
 use std::time::Duration;
 
 use actress::{Actor, ActorContext, Handle, Message, System};

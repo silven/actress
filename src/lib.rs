@@ -2,10 +2,10 @@
 #![deny(unused_imports)]
 
 mod actor;
+mod http;
 mod internal_handlers;
 mod mailbox;
 mod response;
-mod http;
 mod supervisor;
 mod system;
 mod system_context;

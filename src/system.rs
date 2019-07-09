@@ -2,25 +2,25 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::task::Context;
+use std::thread::JoinHandle;
 
 use futures::executor::block_on;
 use futures::future::Future;
-use futures::Poll;
 use futures::stream::StreamExt;
-use tokio_threadpool::ThreadPool;
+use futures::Poll;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 //use tokio::runtime::Runtime;
 use tokio_sync::mpsc;
+use tokio_threadpool::ThreadPool;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
 use crate::http::{Router, Serve};
-use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
-#[cfg(feature = "peek")]
+#[cfg(feature = "actress_peek")]
 use crate::mailbox::PeekGrab;
+use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
 use crate::supervisor::SupervisorGuard;
 use crate::system_context::SystemContext;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::thread::JoinHandle;
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync + 'static>>;
 
@@ -118,15 +118,18 @@ pub(crate) struct ActorBundle<A: Actor> {
     pub(crate) inner: ActorContext<A>,
     pub(crate) recv: Option<mpsc::UnboundedReceiver<Envelope<A>>>,
     pub(crate) supervisor: SupervisorGuard<A>,
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub(crate) listeners: Arc<Mutex<AnyArcMap>>,
 }
+
+// TODO; It's this or specifying that all Actors must be Send. I don't know which is better
+unsafe impl<A> Send for ActorBundle<A> where A: Actor {}
 
 impl<A> ActorBundle<A>
 where
     A: Actor,
 {
-    #[cfg(feature = "peek")]
+    #[cfg(feature = "actress_peek")]
     pub(crate) fn get_listener<M>(&self) -> Option<Arc<PeekGrab<M>>>
     where
         A: Handle<M>,
@@ -171,12 +174,13 @@ impl System {
 
     // TODO, can I get rid of the A?, like, Mailbox: impl Accepts<M> or something?
     pub fn serve<M, A>(&mut self, path: &str, mailbox: Mailbox<A>)
-        where
-            M: Message + DeserializeOwned,
-            M::Result: Serialize,
-            A: Actor + Handle<M>,
+    where
+        M: Message + DeserializeOwned,
+        M::Result: Serialize,
+        A: Actor + Handle<M>,
     {
-        self.json_router.send(Serve(path.to_owned(), Box::new(mailbox)));
+        self.json_router
+            .send(Serve(path.to_owned(), Box::new(mailbox)));
         if self.http_thread.is_none() {
             self.http_thread = Some(crate::http::serve_it(self.json_router.copy()));
         }

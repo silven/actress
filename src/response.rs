@@ -3,9 +3,10 @@ use std::pin::Pin;
 
 use tokio_sync::oneshot;
 use tokio_threadpool::Sender;
-//use tokio::runtime::current_thread::Handle;
 
 use crate::actor::Message;
+
+//use tokio::runtime::current_thread::Handle;
 
 pub trait Response<M: Message> {
     fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>);

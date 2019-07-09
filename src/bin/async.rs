@@ -1,4 +1,5 @@
 #![feature(async_await)]
+
 use actress::{Actor, ActorContext, AsyncResponse, Handle, Message, System};
 
 struct Fibber {

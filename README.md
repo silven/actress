@@ -1,20 +1,20 @@
 # README
 
-This is just a plaything. Seriously.
+*Disclaimer*: This is just a plaything. Seriously.
+
+Actress is an actor framework for Rust, with small processes communicating by sending messages to each other.
+
+Known issues/limitations:
+* Actor ids are usize, meaning your program will crash eventually if you spawn a lot of actors.
+
+Non-features:
+* Highest levels of performance.
 
 ```rust
 #![feature(async_await)]
 use actress::{Actor, ActorContext, AsyncResponse, Handle, Message, System};
 
-struct Fibber {
-    count: u64,
-}
-
-impl Fibber {
-    fn new() -> Self {
-        Fibber { count: 0 }
-    }
-}
+struct Fibber {}
 
 impl Actor for Fibber {}
 
@@ -46,7 +46,7 @@ impl Handle<FibRequest> for Fibber {
 
 fn main() {
     let mut system = System::new();
-    let act = system.start(Fibber::new());
+    let act = system.start(Fibber{});
 
     // We have to move the act-mailbox somewhere or the program won't terminate.
     system.spawn_future(async move {

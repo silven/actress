@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 
 use actress::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message, SyncResponse, System};
 
-
 #[derive(Serialize, Deserialize, Debug)]
 struct Foo(u64);
 
@@ -50,9 +49,11 @@ impl Handle<Foo> for Webby {
 
     fn accept(&mut self, msg: Foo, cx: &mut ActorContext<Self>) -> Self::Response {
         println!("Inside Handle<Foo>");
+        let fibber = cx.spawn_actor(Fibber::new()).unwrap();
+
         AsyncResponse::from_future(async move {
             Resp {
-                x: msg.0 as usize,
+                x: fibber.ask_async(FibRequest(msg.0)).await.unwrap() as usize,
                 y: Some(-1),
                 nom: "tomten".to_string(),
                 foo: Choice::A,
@@ -60,8 +61,6 @@ impl Handle<Foo> for Webby {
         })
     }
 }
-
-
 
 struct Fibber {
     count: u64,
@@ -101,13 +100,22 @@ impl Handle<FibRequest> for Fibber {
     }
 }
 
-
 fn main() {
     let mut system = System::new();
 
     let mb = system.start(Webby {});
     system.serve::<Foo, _>("/foo", mb);
 
+    /*
+    mb.grab::<Foo, _>(|foo| Resp {
+        x: 0,
+        y: Some(-1),
+        nom: "tomten".to_string(),
+        foo: Choice::A,
+    });
+    */
+
+    /*
     let fibber = system.start(Fibber{ count: 0 });
     system.spawn_future(async move {
         match fibber.ask(FibRequest(30)) {
@@ -115,6 +123,6 @@ fn main() {
             Err(e) => println!("Could not ask: {:?}", e),
         };
     });
-
+    */
     system.run_until_completion();
 }

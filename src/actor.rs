@@ -24,7 +24,7 @@ pub enum BacklogPolicy {
 }
 
 // TODO: Why did adding <A> to ActorContext introduce a requirement on Sized in Handle<M>?
-pub trait Actor: Sized + Send + 'static {
+pub trait Actor: Sized + 'static {
     fn starting(&mut self) {}
     fn started(&mut self) {}
 
