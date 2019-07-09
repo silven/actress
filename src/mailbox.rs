@@ -74,7 +74,6 @@ where
         }
 
         let result = <Self::Actor as Handle<M>>::accept(&mut actor.actor, msg, &mut actor.inner);
-        println!("Got a result from the actor");
         result.handle(actor.inner.system.spawner.clone(), self.reply.take());
     }
 

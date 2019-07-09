@@ -12,7 +12,7 @@ use tokio_threadpool::ThreadPool;
 use tokio_sync::mpsc;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
-use crate::http::Router;
+use crate::http::{Router, Serve};
 use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
 #[cfg(feature = "peek")]
 use crate::mailbox::PeekGrab;
@@ -30,7 +30,7 @@ pub struct System {
     context: SystemContext,
     //http_started: bool,
     http_thread: Option<JoinHandle<()>>,
-    json_router: Arc<Router>,
+    json_router: Mailbox<Router>,
 }
 
 // TODO: Is this safe? It should be, the actor bundle itself should never move.
@@ -157,12 +157,15 @@ impl System {
 
         //let spawner = rt.handle();
         let spawner = pool.sender().clone();
+        let mut context = SystemContext::new(spawner);
+        let router = context.spawn_actor(Router::new(), None);
+
         System {
             //tokio_runtime: rt,
             thread_pool: pool,
-            context: SystemContext::new(spawner),
+            context: context,
             http_thread: None,
-            json_router: Arc::new(Router::new()),
+            json_router: router.unwrap(),
         }
     }
 
@@ -173,9 +176,9 @@ impl System {
             M::Result: Serialize,
             A: Actor + Handle<M>,
     {
-        self.json_router.serve(path, Box::new(mailbox));
+        self.json_router.send(Serve(path.to_owned(), Box::new(mailbox)));
         if self.http_thread.is_none() {
-            self.http_thread = Some(crate::http::serve_it(Arc::downgrade(&self.json_router)));
+            self.http_thread = Some(crate::http::serve_it(self.json_router.copy()));
         }
     }
 
@@ -214,9 +217,6 @@ impl System {
         }
 
         self.thread_pool.shutdown_on_idle().wait();
-        /*self.thre
-            .run()
-            .expect("Could not run the runtime?");*/
         println!("Done with system?");
     }
 

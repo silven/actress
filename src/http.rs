@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc};
 
 use hyper::{Body, HeaderMap, Request, Response, Server};
 use hyper::header::CONTENT_LENGTH;
@@ -10,16 +10,16 @@ use hyper::service::{make_service_fn, service_fn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Actor, Handle, Mailbox, Message};
+use crate::{Actor, Handle, Mailbox, Message, AsyncResponse, ActorContext};
 use std::thread::JoinHandle;
 
-type PBF<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
+type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-pub(crate) trait JsonHandler: 'static {
+pub(crate) trait JsonHandler: Send + 'static {
     fn handle_json(&self, req: serde_json::Value) -> PBF<Result<serde_json::Value, &'static str>>;
 }
 
-fn ff<R, F: Future<Output = R> + 'static>(fut: F) -> PBF<R> {
+fn ff<R, F: Future<Output = R> + Send + 'static>(fut: F) -> PBF<R> {
     Box::pin(fut)
 }
 
@@ -31,7 +31,7 @@ pub(crate) trait JsonMailbox<M>
     fn handle(&self, msg: M) -> PBF<Result<M::Result, &'static str>>;
 }
 
-impl<M> JsonHandler for Box<dyn JsonMailbox<M> + 'static>
+impl<M> JsonHandler for Box<dyn JsonMailbox<M> + Send + Sync + 'static>
     where
         M: Message + DeserializeOwned,
         M::Result: Serialize,
@@ -92,52 +92,84 @@ async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, hy
 }
 
 pub struct Router {
-    routes: RwLock<HashMap<String, Arc<dyn JsonHandler>>>,
+    routes: HashMap<String, Arc<dyn JsonHandler + Send + Sync + 'static>>,
 }
 
 impl Router {
     pub fn new() -> Self {
-        Router { routes: RwLock::new(HashMap::new()) }
-    }
-
-    pub(crate) fn serve<M>(&self, path: &str, mailbox: Box<dyn JsonMailbox<M> + 'static>)
-        where M: Message + DeserializeOwned,
-              M::Result: Serialize {
-        if let Ok(mut lock) = self.routes.write() {
-            lock.insert(path.to_owned(), Arc::new(mailbox));
-        }
-    }
-
-    fn route(&self, path: &str) -> Option<Arc<dyn JsonHandler>> {
-        if let Ok(lock) = self.routes.read() {
-            lock.get(path).cloned()
-        } else {
-            None
-        }
+        Router { routes: HashMap::new() }
     }
 }
 
-pub(crate) fn serve_it(router: Weak<Router>) -> std::thread::JoinHandle<()> {
+impl Actor for Router {}
+
+// Json message
+
+struct JsonMessage(String, serde_json::Value);
+
+impl Message for JsonMessage {
+    type Result = serde_json::Value;
+}
+
+impl Handle<JsonMessage> for Router {
+    type Response = AsyncResponse<JsonMessage>;
+
+    fn accept(&mut self, msg: JsonMessage, cx: &mut ActorContext<Self>) -> Self::Response {
+        println!("Got request to {} containing {:?}", msg.0, msg.1);
+        let handler = self.routes.get(&msg.0).cloned();
+
+        AsyncResponse::from_future(async move {
+            if let Some(handler) = handler {
+                match handler.handle_json(msg.1).await {
+                    Ok(reply) => reply,
+                    Err(e) => serde_json::Value::String(e.to_owned())
+                }
+            } else {
+                serde_json::Value::String("NO ROUTE".to_owned())
+            }
+        })
+    }
+}
+
+// Serve
+
+pub(crate) struct Serve<M>(pub(crate) String, pub(crate) Box<dyn JsonMailbox<M> + Send + Sync + 'static>) where M: Message, M::Result: Serialize;
+
+impl<M> Message for Serve<M> where M: Message, M::Result: Serialize {
+    type Result = ();
+}
+
+impl<M> Handle<Serve<M>> for Router where M: Message + DeserializeOwned, M::Result: Serialize {
+    type Response = ();
+
+    fn accept(&mut self, msg: Serve<M>, cx: &mut ActorContext<Self>) -> Self::Response {
+        self.routes.insert(msg.0, Arc::new(msg.1));
+    }
+}
+
+pub(crate) fn serve_it(router: Mailbox<Router>) -> std::thread::JoinHandle<()> {
     let hyper_thread: JoinHandle<()> = std::thread::spawn(|| {
+        // Start separate tokio runtime here, just for hyper
         hyper::rt::run(async move {
             let addr = "127.0.0.1:12345".parse().unwrap();
 
             let mk_service = make_service_fn(move |_| {
-                let router = router.clone();
+                let router = router.copy();
                 async move {
                     Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                        let router = router.clone();
+                        let router = router.copy();
                         async move {
                             //Ok::<_, hyper::Error>(Response::builder().status(200).body(Body::from("hi!".to_owned())).unwrap())
-
-                            match serve_request(router, req).await {
-                                Ok(resp) => Ok::<_, hyper::error::Error>(resp),
-                                Err(msg) => {
-                                    let desc = msg.description().to_owned();
-                                    Ok(Response::builder().status(500).body(Body::from(desc)).unwrap())
+                            let msg = deserialize_body(req).await.unwrap();
+                            Ok::<_, hyper::error::Error>(match router.ask_async(msg).await {
+                                Ok(json) => {
+                                    let as_string = serde_json::to_string(&json).unwrap();
+                                    Response::builder().status(200).body(Body::from(as_string)).unwrap()
+                                },
+                                Err(_) => {
+                                    Response::builder().status(500).body(Body::from("Could not")).unwrap()
                                 }
-                            }
-
+                            })
                         }
                     }))
                 }
@@ -150,6 +182,15 @@ pub(crate) fn serve_it(router: Weak<Router>) -> std::thread::JoinHandle<()> {
     hyper_thread
 }
 
+async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, Box<dyn Error>> {
+    let (parts, body) = req.into_parts();
+    let body_bytes = collect_body(&parts.headers, body).await?;
+
+    let json_value = serde_json::from_slice(&body_bytes)?;
+    Ok(JsonMessage(parts.uri.path().to_owned(), json_value))
+}
+
+/*
 async fn serve_request(routes: Weak<Router>, req: Request<Body>) -> Result<Response<Body>, Box<dyn Error>> {
     let (parts, body) = req.into_parts();
     let body_bytes = collect_body(&parts.headers, body).await?;
@@ -166,3 +207,4 @@ async fn serve_request(routes: Weak<Router>, req: Request<Body>) -> Result<Respo
 
     Ok(Response::new(Body::from(body)))
 }
+*/

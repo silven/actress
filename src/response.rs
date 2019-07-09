@@ -32,14 +32,10 @@ where
     M::Result: Send,
 {
     fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
-        println!("I'm now in the async handle fn");
         spawner.spawn(async move {
-            println!("I'm now in the async handle block, waiting");
             let result: <M as Message>::Result = self.0.await;
-            println!("I'm now in the async handle fn, got a result");
             if let Some(tx) = reply_to {
                 tx.send(Some(result));
-                println!("I'm now in the async handle fn, sent reply!");
             }
         });
     }
