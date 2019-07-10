@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use tokio_sync::mpsc;
-use tokio_threadpool::Sender;
+//use tokio_threadpool::Sender;
 
 use crate::internal_handlers::{StoppableActor, Supervises};
 use crate::supervisor::SupervisorGuard;
@@ -14,15 +14,15 @@ use crate::{Actor, ActorContext, Mailbox};
 
 #[derive(Clone)]
 pub(crate) struct SystemContext {
-    //pub(crate) spawner: tokio::runtime::current_thread::Handle,
-    pub(crate) spawner: Sender,
+    pub(crate) spawner: tokio::runtime::TaskExecutor,
+    //pub(crate) spawner: Sender,
     pub(crate) registry: Arc<Mutex<HashMap<String, Box<dyn StoppableActor>>>>,
     id_counter: usize,
 }
 
 impl SystemContext {
-    //pub(crate) fn new(spawner: tokio::runtime::current_thread::Handle) -> Self {
-    pub(crate) fn new(spawner: Sender) -> Self {
+    pub(crate) fn new(spawner: tokio::runtime::TaskExecutor) -> Self {
+    //pub(crate) fn new(spawner: Sender) -> Self {
         SystemContext {
             spawner: spawner,
             registry: Arc::new(Mutex::new(HashMap::new())),
@@ -56,8 +56,8 @@ impl SystemContext {
         None
     }
 
-    pub(crate) fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) -> bool {
-        self.spawner.spawn(fut).is_ok() // TODO; Better way of handling spawn errors?
+    pub(crate) fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) {
+        self.spawner.spawn(fut) // TODO; Better way of handling spawn errors? (panic?)
     }
 
     pub(crate) fn spawn_actor<A>(
@@ -86,11 +86,8 @@ impl SystemContext {
 
             // TODO; Figure out a way to move this into the true-branch below
             Actor::started(&mut bundle.actor);
-
-            match self.spawn_future(bundle) {
-                true => Ok(mailbox),
-                false => Err(()),
-            }
+            self.spawn_future(bundle);
+            Ok(mailbox)
         }
 
         #[cfg(not(feature = "actress_peek"))]

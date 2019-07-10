@@ -16,4 +16,5 @@ pub use crate::{
     response::{AsyncResponse, SyncResponse},
     supervisor::{PanicData, Supervisor},
     system::System,
+    http::HttpMailbox,
 };

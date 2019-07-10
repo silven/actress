@@ -2,14 +2,15 @@ use std::future::Future;
 use std::pin::Pin;
 
 use tokio_sync::oneshot;
-use tokio_threadpool::Sender;
+//use tokio_threadpool::Sender;
+use tokio::runtime::TaskExecutor;
 
 use crate::actor::Message;
 
 //use tokio::runtime::current_thread::Handle;
 
 pub trait Response<M: Message> {
-    fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>);
+    fn handle(self, spawner: TaskExecutor, reply_to: Option<oneshot::Sender<Option<M::Result>>>);
 }
 
 pub struct SyncResponse<M: Message>(M::Result);
@@ -32,7 +33,7 @@ where
     M: Message,
     M::Result: Send,
 {
-    fn handle(self, spawner: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+    fn handle(self, spawner: TaskExecutor, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
         spawner.spawn(async move {
             let result: <M as Message>::Result = self.0.await;
             if let Some(tx) = reply_to {
@@ -46,7 +47,7 @@ impl<M> Response<M> for SyncResponse<M>
 where
     M: Message,
 {
-    fn handle(self, _: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+    fn handle(self, _: TaskExecutor, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
         if let Some(tx) = reply_to {
             tx.send(Some(self.0));
         }
@@ -59,7 +60,7 @@ macro_rules! simple_response {
         where
             M: Message<Result = $type>,
         {
-            fn handle(self, _: Sender, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
+            fn handle(self, _: TaskExecutor, reply_to: Option<oneshot::Sender<Option<M::Result>>>) {
                 if let Some(tx) = reply_to {
                     tx.send(Some(self));
                 }

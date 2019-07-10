@@ -2,7 +2,6 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::task::Context;
-use std::thread::JoinHandle;
 
 use futures::executor::block_on;
 use futures::future::Future;
@@ -10,9 +9,9 @@ use futures::stream::StreamExt;
 use futures::Poll;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-//use tokio::runtime::Runtime;
+use tokio::runtime::Runtime;
 use tokio_sync::mpsc;
-use tokio_threadpool::ThreadPool;
+//use tokio_threadpool::ThreadPool;
 
 use crate::actor::{Actor, ActorContext, BacklogPolicy, Handle, Message};
 use crate::http::{Router, Serve};
@@ -21,15 +20,16 @@ use crate::mailbox::PeekGrab;
 use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
 use crate::supervisor::SupervisorGuard;
 use crate::system_context::SystemContext;
+use std::time::Duration;
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync + 'static>>;
 
 pub struct System {
-    //tokio_runtime: Runtime,
-    thread_pool: ThreadPool,
+    tokio_runtime: Runtime,
+    //thread_pool: ThreadPool,
     context: SystemContext,
     //http_started: bool,
-    http_thread: Option<JoinHandle<()>>,
+    http_thread: Option<u8>,
     json_router: Mailbox<Router>,
 }
 
@@ -49,6 +49,7 @@ where
         */
         // TODO: the panic hook is a global resource, we should set a global one that reads
         // thread local data about the currently running actor.
+        /*
         let sup_guard = self.supervisor.guard();
         let my_id = self.inner.id();
         std::panic::set_hook(Box::new(move |info| {
@@ -58,7 +59,7 @@ where
                 sup.notify_worker_stopped(my_id, Some(info.into()));
             };
         }));
-
+        */
         // TODO: this loop shouldn't have to be here?
         loop {
             if self.recv.is_none() {
@@ -155,17 +156,17 @@ where
 
 impl System {
     pub fn new() -> Self {
-        //let rt = Runtime::new().expect("Could not construct tokio runtime");
-        let pool = ThreadPool::new();
+        let rt = Runtime::new().expect("Could not construct tokio runtime");
+        //let pool = ThreadPool::new();
 
-        //let spawner = rt.handle();
-        let spawner = pool.sender().clone();
+        let spawner = rt.executor();
+        //let spawner = pool.sender().clone();
         let mut context = SystemContext::new(spawner);
         let router = context.spawn_actor(Router::new(), None);
 
         System {
-            //tokio_runtime: rt,
-            thread_pool: pool,
+            tokio_runtime: rt,
+            //thread_pool: pool,
             context: context,
             http_thread: None,
             json_router: router.unwrap(),
@@ -182,7 +183,8 @@ impl System {
         self.json_router
             .send(Serve(path.to_owned(), Box::new(mailbox)));
         if self.http_thread.is_none() {
-            self.http_thread = Some(crate::http::serve_it(self.json_router.copy()));
+            self.http_thread = Some(1);
+            self.spawn_future(crate::http::serve_it(self.json_router.copy()))
         }
     }
 
@@ -220,7 +222,9 @@ impl System {
             Err(_) => panic!("Could not terminate services..."),
         }
 
-        self.thread_pool.shutdown_on_idle().wait();
+        //self.thread_pool.shutdown_on_idle().wait();
+        std::thread::sleep(Duration::from_secs(5));
+        block_on(self.tokio_runtime.shutdown_on_idle());
         println!("Done with system?");
     }
 

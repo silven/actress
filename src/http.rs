@@ -2,15 +2,17 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use hyper::header::{HeaderValue, CONTENT_LENGTH, UPGRADE};
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode};
+use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode, Uri};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
+use crate::mailbox::MailboxAskError;
+use hyper::client::ResponseFuture;
+use std::marker::PhantomData;
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -70,7 +72,7 @@ where
     }
 }
 
-async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, hyper::Error> {
+pub(crate) async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, hyper::Error> {
     // Much hassle to read the content-length header
     let c_len: usize = headers
         .get(CONTENT_LENGTH)
@@ -166,50 +168,45 @@ where
 
 // Start hyper thread
 
-pub(crate) fn serve_it(router: Mailbox<Router>) -> std::thread::JoinHandle<()> {
-    let hyper_thread: JoinHandle<()> = std::thread::spawn(|| {
-        // Start separate tokio runtime here, just for hyper
-        hyper::rt::run(async move {
-            let addr = "127.0.0.1:12345".parse().unwrap();
+pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output=()> {
+    async move {
+        let addr = "127.0.0.1:12345".parse().unwrap();
 
-            let mk_service = make_service_fn(move |_| {
-                let router = router.copy();
-                async move {
-                    Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                        let router = router.copy();
-                        async move {
-                            if req.headers().contains_key(UPGRADE) {
-                                // TODO; Find out how to turn websocket object into channel
-                                hyper::rt::spawn(async move {
-                                    match req.into_body().on_upgrade().await {
-                                        Ok(upgraded) => {
-                                            println!("Got upgraded websocket: {:?}, now what to do with it?", upgraded);
-                                        }
-                                        Err(err) => {
-                                            println!("Could not upgrade websocket: {:?}", err);
-                                        }
+        let mk_service = make_service_fn(move |_| {
+            let router = router.copy();
+            async move {
+                Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
+                    let router = router.copy();
+                    async move {
+                        if req.headers().contains_key(UPGRADE) {
+                            // TODO; Find out how to turn websocket object into channel
+                            tokio::spawn(async move {
+                                match req.into_body().on_upgrade().await {
+                                    Ok(upgraded) => {
+                                        println!("Got upgraded websocket: {:?}, now what to do with it?", upgraded);
                                     }
-                                });
+                                    Err(err) => {
+                                        println!("Could not upgrade websocket: {:?}", err);
+                                    }
+                                }
+                            });
 
-                                Ok::<_, hyper::Error>(
-                                    Response::builder()
-                                        .status(StatusCode::SWITCHING_PROTOCOLS)
-                                        .header(UPGRADE, HeaderValue::from_static("websocket"))
-                                        .body(Body::empty())
-                                        .unwrap(),
-                                )
-                            } else {
-                                Ok::<_, hyper::Error>(serve_request(router, req).await)
-                            }
+                            Ok::<_, hyper::Error>(
+                                Response::builder()
+                                    .status(StatusCode::SWITCHING_PROTOCOLS)
+                                    .header(UPGRADE, HeaderValue::from_static("websocket"))
+                                    .body(Body::empty())
+                                    .unwrap(),
+                            )
+                        } else {
+                            Ok::<_, hyper::Error>(serve_request(router, req).await)
                         }
-                    }))
-                }
-            });
-            Server::bind(&addr).serve(mk_service).await;
+                    }
+                }))
+            }
         });
-    });
-
-    hyper_thread
+        Server::bind(&addr).serve(mk_service).await;
+    }
 }
 
 async fn serve_request(router: Mailbox<Router>, req: Request<Body>) -> Response<Body> {
@@ -248,4 +245,72 @@ async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, &'static st
         .or(Err("Could not read body"))?;
     let json_value = serde_json::from_slice(&body_bytes).or(Err("Could not deserialize"))?;
     Ok(JsonMessage(parts.uri.path().to_owned(), json_value))
+}
+
+
+
+pub struct HttpMailbox<A>
+    where
+        A: Actor,
+{
+    _phantom: PhantomData<*const A>,
+    uri: Uri,
+    client: hyper::Client<hyper::client::HttpConnector>,
+}
+
+unsafe impl<A> Send for HttpMailbox<A> where A: Actor {}
+
+impl<A> HttpMailbox<A> where A: Actor {
+    pub fn new_at(path: &str) -> Option<Self> {
+        match path.parse::<Uri>() {
+            Ok(url) => {
+                Some(HttpMailbox::<A> {
+                    _phantom: PhantomData,
+                    uri: url,
+                    client: hyper::Client::new()
+                })
+            },
+            _ => None,
+        }
+    }
+
+    pub fn ask_async<M>(&self, msg: M) -> impl Future<Output=Result<M::Result, MailboxAskError>>
+        where
+            A: Actor + Handle<M>,
+            M: Message + Serialize,
+            M::Result: DeserializeOwned,
+    {
+        let as_json = serde_json::to_string(&msg).unwrap();
+        println!("Sending json: {:?}", as_json);
+        let body = hyper::Body::from(as_json);
+        let resp_fut: ResponseFuture = self.client.request(Request::post(self.uri.clone()).body(body).expect("request builder"));
+
+        async move {
+            println!("Inside async");
+            let respr: Result<hyper::Response<Body>, hyper::Error> = resp_fut.await;
+            match respr {
+                Ok(resp) => {
+                    println!("inside resp");
+                    let (parts, body) = resp.into_parts();
+                    let resp_body = collect_body(&parts.headers, body);
+                    let resp_result: Result<Vec<u8>, hyper::Error> = resp_body.await;
+                    println!("The byte result: {:?}", resp_result);
+                    match resp_result {
+                        Ok(bytes) => {
+                            let as_result = serde_json::from_slice(&bytes).unwrap();
+                            Ok(as_result)
+                        },
+                        Err(msg) => {
+                            eprintln!("Recv err: {:?}", msg);
+                            Err(MailboxAskError::CouldNotRecv)
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Client error: {:?}", e);
+                    Err(MailboxAskError::CouldNotRecv)
+                }
+            }
+        }
+    }
 }

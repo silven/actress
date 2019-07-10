@@ -16,7 +16,8 @@ use hyper::{Body, Client, HeaderMap, Method, Request, Response, Server};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use actress::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message, SyncResponse, System};
+use actress::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message, SyncResponse, System, HttpMailbox};
+use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Foo(u64);
@@ -40,6 +41,14 @@ impl Message for Foo {
     type Result = Resp;
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct Bar(i64);
+
+impl Message for Bar {
+    type Result = u64;
+}
+
+
 struct Webby;
 
 impl Actor for Webby {}
@@ -57,6 +66,22 @@ impl Handle<Foo> for Webby {
                 y: Some(-1),
                 nom: "tomten".to_string(),
                 foo: Choice::A,
+            }
+        })
+    }
+}
+
+impl Handle<Bar> for Webby {
+    type Response = AsyncResponse<Bar>;
+
+    fn accept(&mut self, msg: Bar, cx: &mut ActorContext<Self>) -> Self::Response {
+        println!("Inside Handle<Bar>");
+        let remote = HttpMailbox::<Webby>::new_at("http://localhost:12345/foo").unwrap();
+
+        AsyncResponse::from_future(async move {
+            match remote.ask_async(Foo(2)).await {
+                Ok(resp) => resp.x as u64,
+                Err(_) => 0
             }
         })
     }
@@ -105,7 +130,7 @@ fn main() {
 
     let mb = system.start(Webby {});
     system.serve::<Foo, _>("/foo", mb);
-
+    std::thread::sleep(Duration::from_secs(1));
     /*
     mb.grab::<Foo, _>(|foo| Resp {
         x: 0,
@@ -114,6 +139,13 @@ fn main() {
         foo: Choice::A,
     });
     */
+    let web2 = system.start(Webby{});
+    system.spawn_future(async move {
+        match web2.ask_async(Bar(12)).await {
+            Ok(long) => println!("Got a long {}", long),
+            Err(_) => eprintln!("Noooooo"),
+        }
+    });
 
     /*
     let fibber = system.start(Fibber{ count: 0 });
