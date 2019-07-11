@@ -3,7 +3,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use hyper::header::{HeaderValue, CONTENT_LENGTH, UPGRADE};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode, Uri};
 use serde::de::DeserializeOwned;
@@ -13,6 +12,8 @@ use crate::mailbox::MailboxAskError;
 use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
 use hyper::client::ResponseFuture;
 use std::marker::PhantomData;
+use hyper::upgrade::Upgraded;
+use headers::{HeaderMapExt, Connection, Upgrade, ContentLength};
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -77,13 +78,9 @@ pub(crate) async fn collect_body(
     mut body: Body,
 ) -> Result<Vec<u8>, hyper::Error> {
     // Much hassle to read the content-length header
-    let c_len: usize = headers
-        .get(CONTENT_LENGTH)
-        .and_then(|x| x.to_str().ok())
-        .and_then(|x| x.parse().ok())
-        .unwrap_or(128);
+    let c_len = headers.typed_get::<ContentLength>().map(|c| c.0 as usize);
 
-    let mut buff = Vec::with_capacity(c_len);
+    let mut buff = Vec::with_capacity(c_len.unwrap_or(512));
     while let Some(next) = body.next().await {
         let chunk = next?;
         buff.extend_from_slice(chunk.as_ref());
@@ -181,7 +178,13 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
                 Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
                     let router = router.copy();
                     async move {
-                        if req.headers().contains_key(UPGRADE) {
+                        if req.headers().typed_get::<Upgrade>().is_some() {
+                            println!("upgrade request: {:?}", req);
+                            use headers::{SecWebsocketKey, SecWebsocketAccept};
+
+                            let key = req.headers().typed_get::<SecWebsocketKey>().unwrap();
+                            let accept = SecWebsocketAccept::from(key.clone());
+                            println!("Read key = {:?} derived = {:?}", key, accept);
                             // TODO; Find out how to turn websocket object into channel
                             tokio::spawn(async move {
                                 match req.into_body().on_upgrade().await {
@@ -190,6 +193,15 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
                                             "Got upgraded websocket: {:?}, now what to do with it?",
                                             upgraded
                                         );
+                                        use futures::future::poll_fn;
+                                        use tokio::prelude::*;
+
+                                        let mut u: Upgraded = upgraded;
+                                        //let mut buff = Vec::with_capacity(512);
+                                        let msg = "HEEELEOOO";
+                                        //poll_fn(|cx| <Upgraded as AsyncRead>::poll_read(Pin::new(&mut u), cx, &mut buff)).await;
+                                        let bs = poll_fn(|cx| <Upgraded as AsyncWrite>::poll_write(Pin::new(&mut u), cx, msg.as_bytes())).await;
+                                        println!("Wrote some by bytes: {:?}", bs);
                                     }
                                     Err(err) => {
                                         println!("Could not upgrade websocket: {:?}", err);
@@ -197,13 +209,15 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
                                 }
                             });
 
-                            Ok::<_, hyper::Error>(
-                                Response::builder()
-                                    .status(StatusCode::SWITCHING_PROTOCOLS)
-                                    .header(UPGRADE, HeaderValue::from_static("websocket"))
-                                    .body(Body::empty())
-                                    .unwrap(),
-                            )
+                            let mut res = Response::default();
+
+                            *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+
+                            res.headers_mut().typed_insert(Connection::upgrade());
+                            res.headers_mut().typed_insert(Upgrade::websocket());
+                            res.headers_mut().typed_insert(accept);
+
+                            Ok::<_, hyper::Error>(res)
                         } else {
                             Ok::<_, hyper::Error>(serve_request(router, req).await)
                         }
