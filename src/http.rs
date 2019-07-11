@@ -249,22 +249,29 @@ async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, &'static st
 
 
 
-pub struct HttpMailbox<A>
+pub struct HttpMailbox<M>
     where
-        A: Actor,
+        M: Message + Serialize,
+        M::Result: DeserializeOwned,
 {
-    _phantom: PhantomData<*const A>,
+    _phantom: PhantomData<*const M>,
     uri: Uri,
     client: hyper::Client<hyper::client::HttpConnector>,
 }
 
-unsafe impl<A> Send for HttpMailbox<A> where A: Actor {}
+unsafe impl<M> Send for HttpMailbox<M> where
+    M: Message + Serialize,
+    M::Result: DeserializeOwned, {}
 
-impl<A> HttpMailbox<A> where A: Actor {
+impl<M> HttpMailbox<M>
+    where
+    M: Message + Serialize,
+    M::Result: DeserializeOwned,
+{
     pub fn new_at(path: &str) -> Option<Self> {
         match path.parse::<Uri>() {
             Ok(url) => {
-                Some(HttpMailbox::<A> {
+                Some(HttpMailbox::<M> {
                     _phantom: PhantomData,
                     uri: url,
                     client: hyper::Client::new()
@@ -274,28 +281,17 @@ impl<A> HttpMailbox<A> where A: Actor {
         }
     }
 
-    pub fn ask_async<M>(&self, msg: M) -> impl Future<Output=Result<M::Result, MailboxAskError>>
-        where
-            A: Actor + Handle<M>,
-            M: Message + Serialize,
-            M::Result: DeserializeOwned,
+    pub fn ask_async(&self, msg: M) -> impl Future<Output=Result<M::Result, MailboxAskError>>
     {
         let as_json = serde_json::to_string(&msg).unwrap();
-        println!("Sending json: {:?}", as_json);
         let body = hyper::Body::from(as_json);
         let resp_fut: ResponseFuture = self.client.request(Request::post(self.uri.clone()).body(body).expect("request builder"));
 
         async move {
-            println!("Inside async");
-            let respr: Result<hyper::Response<Body>, hyper::Error> = resp_fut.await;
-            match respr {
+            match resp_fut.await {
                 Ok(resp) => {
-                    println!("inside resp");
                     let (parts, body) = resp.into_parts();
-                    let resp_body = collect_body(&parts.headers, body);
-                    let resp_result: Result<Vec<u8>, hyper::Error> = resp_body.await;
-                    println!("The byte result: {:?}", resp_result);
-                    match resp_result {
+                    match collect_body(&parts.headers, body).await {
                         Ok(bytes) => {
                             let as_result = serde_json::from_slice(&bytes).unwrap();
                             Ok(as_result)

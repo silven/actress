@@ -76,10 +76,10 @@ impl Handle<Bar> for Webby {
 
     fn accept(&mut self, msg: Bar, cx: &mut ActorContext<Self>) -> Self::Response {
         println!("Inside Handle<Bar>");
-        let remote = HttpMailbox::<Webby>::new_at("http://localhost:12345/foo").unwrap();
+        let remote = HttpMailbox::<Foo>::new_at("http://localhost:12345/foo").unwrap();
 
         AsyncResponse::from_future(async move {
-            match remote.ask_async(Foo(2)).await {
+            match remote.ask_async(Foo(4)).await {
                 Ok(resp) => resp.x as u64,
                 Err(_) => 0
             }
