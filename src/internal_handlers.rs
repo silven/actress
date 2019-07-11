@@ -40,7 +40,7 @@ where
 // All Supvervisors get a message when a worker it it supvervising has stopped.
 
 /// If there is panic data, there was a crash. If there is none, it stopped gracefully.
-pub(crate) struct WorkerStopped<W: Actor>(usize, Option<PanicData>, PhantomData<*const W>);
+pub(crate) struct WorkerStopped<W: Actor>(u64, Option<PanicData>, PhantomData<*const W>);
 // Send is safe because the actor isn't really there.
 unsafe impl<W> Send for WorkerStopped<W> where W: Actor {}
 //unsafe impl<W> Sync for WorkerStopped<W> where W: Actor {}
@@ -56,7 +56,7 @@ pub(crate) trait Supervises<A>: Send + 'static
 where
     A: Actor,
 {
-    fn notify_worker_stopped(&self, worker_id: usize, info: Option<PanicData>);
+    fn notify_worker_stopped(&self, worker_id: u64, info: Option<PanicData>);
 }
 
 impl<S, W> Handle<WorkerStopped<W>> for S
@@ -76,7 +76,7 @@ where
     S: Supervisor<W> + Handle<WorkerStopped<W>>,
     W: Actor,
 {
-    fn notify_worker_stopped(&self, worker_id: usize, info: Option<PanicData>) {
+    fn notify_worker_stopped(&self, worker_id: u64, info: Option<PanicData>) {
         self.send(WorkerStopped(worker_id, info, PhantomData::<*const W>));
     }
 }

@@ -70,7 +70,7 @@ where
         }
     }
 
-    pub fn id(&self) -> usize {
+    pub fn id(&self) -> u64 {
         self.mailbox.id()
     }
 

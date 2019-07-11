@@ -10,7 +10,7 @@ pub trait Supervisor<W>: Actor
 where
     W: Actor,
 {
-    fn worker_stopped(&mut self, worker_id: usize, info: Option<PanicData>);
+    fn worker_stopped(&mut self, worker_id: u64, info: Option<PanicData>);
 }
 
 #[derive(Debug)]
@@ -88,7 +88,7 @@ pub(crate) struct SupervisorGuard<A>
 where
     A: Actor,
 {
-    id: usize,
+    id: u64,
     inner: Arc<AtomicCell<Option<Box<dyn Supervises<A>>>>>,
 }
 
@@ -96,7 +96,7 @@ impl<A> SupervisorGuard<A>
 where
     A: Actor,
 {
-    pub(crate) fn new(id: usize, sup: Option<Box<dyn Supervises<A>>>) -> Self {
+    pub(crate) fn new(id: u64, sup: Option<Box<dyn Supervises<A>>>) -> Self {
         SupervisorGuard {
             id,
             inner: Arc::new(AtomicCell::new(sup)),

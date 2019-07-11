@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-
+use std::sync::atomic::{AtomicU64, Ordering::AcqRel};
 use tokio_sync::mpsc;
-//use tokio_threadpool::Sender;
 
+use crate::{Actor, ActorContext, Mailbox};
 use crate::internal_handlers::{StoppableActor, Supervises};
 use crate::supervisor::SupervisorGuard;
 use crate::system::ActorBundle;
-use crate::{Actor, ActorContext, Mailbox};
+
+//use tokio_threadpool::Sender;
 
 //use tokio_threadpool::Sender;
 
@@ -17,7 +18,7 @@ pub(crate) struct SystemContext {
     pub(crate) spawner: tokio::runtime::TaskExecutor,
     //pub(crate) spawner: Sender,
     pub(crate) registry: Arc<Mutex<HashMap<String, Box<dyn StoppableActor>>>>,
-    id_counter: usize,
+    id_counter: Arc<AtomicU64>,
 }
 
 impl SystemContext {
@@ -26,7 +27,7 @@ impl SystemContext {
         SystemContext {
             spawner: spawner,
             registry: Arc::new(Mutex::new(HashMap::new())),
-            id_counter: 0,
+            id_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -69,17 +70,17 @@ impl SystemContext {
         A: Actor,
     {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.id_counter += 1;
+        let actor_id = self.id_counter.fetch_add(1, AcqRel);
 
         #[cfg(feature = "actress_peek")]
         {
             let listeners = Arc::new(Mutex::new(HashMap::new()));
-            let mailbox = Mailbox::<A>::new(self.id_counter, tx, Arc::downgrade(&listeners));
+            let mailbox = Mailbox::<A>::new(actor_id, tx, Arc::downgrade(&listeners));
 
             let mut bundle = ActorBundle {
                 actor: actor,
                 recv: Some(rx),
-                supervisor: SupervisorGuard::new(self.id_counter, sup),
+                supervisor: SupervisorGuard::new(actor_id, sup),
                 listeners: listeners,
                 inner: ActorContext::new(mailbox.copy(), self.clone()),
             };
@@ -97,7 +98,7 @@ impl SystemContext {
             let mut bundle = ActorBundle {
                 actor: actor,
                 recv: Some(rx),
-                supervisor: SupervisorGuard::new(self.id_counter, sup),
+                supervisor: SupervisorGuard::new(actor_id, sup),
                 inner: ActorContext::new(mailbox.copy(), self.clone()),
             };
 

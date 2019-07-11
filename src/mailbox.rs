@@ -132,7 +132,7 @@ pub struct Mailbox<A>
 where
     A: Actor,
 {
-    actor_id: usize,
+    actor_id: u64,
     tx: mpsc::UnboundedSender<Envelope<A>>,
     #[cfg(feature = "actress_peek")]
     listeners: Weak<Mutex<AnyMap>>,
@@ -156,7 +156,7 @@ where
 {
     #[cfg(feature = "actress_peek")]
     pub(crate) fn new(
-        actor_id: usize,
+        actor_id: u64,
         inbox: mpsc::UnboundedSender<Envelope<A>>,
         listeners: Weak<Mutex<AnyMap>>,
     ) -> Self {
@@ -167,12 +167,12 @@ where
         }
     }
 
-    pub fn id(&self) -> usize {
+    pub fn id(&self) -> u64 {
         self.actor_id
     }
 
     #[cfg(not(feature = "actress_peek"))]
-    pub(crate) fn new(actor_id: usize, inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
+    pub(crate) fn new(actor_id: u64, inbox: mpsc::UnboundedSender<Envelope<A>>) -> Self {
         Mailbox {
             actor_id: actor_id,
             tx: inbox,
