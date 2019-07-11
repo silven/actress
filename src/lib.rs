@@ -12,9 +12,9 @@ mod system_context;
 
 pub use crate::{
     actor::{Actor, ActorContext, Handle, Message},
+    http::HttpMailbox,
     mailbox::Mailbox,
     response::{AsyncResponse, SyncResponse},
     supervisor::{PanicData, Supervisor},
     system::System,
-    http::HttpMailbox,
 };

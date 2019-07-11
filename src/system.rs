@@ -110,7 +110,7 @@ where
                     Actor::stopping(&mut self.actor);
                     self.close_and_stop();
                     break;
-                },
+                }
                 Poll::Pending => return Poll::Pending,
             }
         }

@@ -9,8 +9,8 @@ use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode, Uri};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
 use crate::mailbox::MailboxAskError;
+use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
 use hyper::client::ResponseFuture;
 use std::marker::PhantomData;
 
@@ -72,7 +72,10 @@ where
     }
 }
 
-pub(crate) async fn collect_body(headers: &HeaderMap, mut body: Body) -> Result<Vec<u8>, hyper::Error> {
+pub(crate) async fn collect_body(
+    headers: &HeaderMap,
+    mut body: Body,
+) -> Result<Vec<u8>, hyper::Error> {
     // Much hassle to read the content-length header
     let c_len: usize = headers
         .get(CONTENT_LENGTH)
@@ -168,7 +171,7 @@ where
 
 // Start hyper thread
 
-pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output=()> {
+pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
     async move {
         let addr = "127.0.0.1:12345".parse().unwrap();
 
@@ -183,7 +186,10 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output=()> {
                             tokio::spawn(async move {
                                 match req.into_body().on_upgrade().await {
                                     Ok(upgraded) => {
-                                        println!("Got upgraded websocket: {:?}, now what to do with it?", upgraded);
+                                        println!(
+                                            "Got upgraded websocket: {:?}, now what to do with it?",
+                                            upgraded
+                                        );
                                     }
                                     Err(err) => {
                                         println!("Could not upgrade websocket: {:?}", err);
@@ -231,7 +237,7 @@ async fn serve_request(router: Mailbox<Router>, req: Request<Body>) -> Response<
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::from("Internal Server Error"))
                     .unwrap()
-            },
+            }
         },
         Err(err) => Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -250,45 +256,47 @@ async fn deserialize_body(req: Request<Body>) -> Result<JsonMessage, &'static st
     Ok(JsonMessage(parts.uri.path().to_owned(), json_value))
 }
 
-
-
 pub struct HttpMailbox<M>
-    where
-        M: Message + Serialize,
-        M::Result: DeserializeOwned,
+where
+    M: Message + Serialize,
+    M::Result: DeserializeOwned,
 {
     _phantom: PhantomData<*const M>,
     uri: Uri,
     client: hyper::Client<hyper::client::HttpConnector>,
 }
 
-unsafe impl<M> Send for HttpMailbox<M> where
+unsafe impl<M> Send for HttpMailbox<M>
+where
     M: Message + Serialize,
-    M::Result: DeserializeOwned, {}
+    M::Result: DeserializeOwned,
+{
+}
 
 impl<M> HttpMailbox<M>
-    where
+where
     M: Message + Serialize,
     M::Result: DeserializeOwned,
 {
     pub fn new_at(path: &str) -> Option<Self> {
         match path.parse::<Uri>() {
-            Ok(url) => {
-                Some(HttpMailbox::<M> {
-                    _phantom: PhantomData,
-                    uri: url,
-                    client: hyper::Client::new()
-                })
-            },
+            Ok(url) => Some(HttpMailbox::<M> {
+                _phantom: PhantomData,
+                uri: url,
+                client: hyper::Client::new(),
+            }),
             _ => None,
         }
     }
 
-    pub fn ask_async(&self, msg: M) -> impl Future<Output=Result<M::Result, MailboxAskError>>
-    {
+    pub fn ask_async(&self, msg: M) -> impl Future<Output = Result<M::Result, MailboxAskError>> {
         let as_json = serde_json::to_string(&msg).unwrap();
         let body = hyper::Body::from(as_json);
-        let resp_fut: ResponseFuture = self.client.request(Request::post(self.uri.clone()).body(body).expect("request builder"));
+        let resp_fut: ResponseFuture = self.client.request(
+            Request::post(self.uri.clone())
+                .body(body)
+                .expect("request builder"),
+        );
 
         async move {
             match resp_fut.await {
@@ -296,21 +304,23 @@ impl<M> HttpMailbox<M>
                     let (parts, body) = resp.into_parts();
                     // TODO; Check HTTP return code
                     match collect_body(&parts.headers, body).await {
-                        Ok(bytes) =>
-                            match serde_json::from_slice(&bytes) {
-                                Ok(result) => Ok(result),
-                                Err(decode_err) => {
-                                    let as_str = String::from_utf8_lossy(&bytes);
-                                    eprintln!("Decode err: {:?} str={}, bytes = {:?}", decode_err, as_str, bytes);
-                                    Err(MailboxAskError::CouldNotRecv)
-                                },
-                            },
+                        Ok(bytes) => match serde_json::from_slice(&bytes) {
+                            Ok(result) => Ok(result),
+                            Err(decode_err) => {
+                                let as_str = String::from_utf8_lossy(&bytes);
+                                eprintln!(
+                                    "Decode err: {:?} str={}, bytes = {:?}",
+                                    decode_err, as_str, bytes
+                                );
+                                Err(MailboxAskError::CouldNotRecv)
+                            }
+                        },
                         Err(msg) => {
                             eprintln!("Recv err: {:?}", msg);
                             Err(MailboxAskError::CouldNotRecv)
-                        },
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     eprintln!("Client error: {:?}", e);
                     Err(MailboxAskError::CouldNotRecv)

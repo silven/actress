@@ -16,7 +16,9 @@ use hyper::{Body, Client, HeaderMap, Method, Request, Response, Server};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use actress::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message, SyncResponse, System, HttpMailbox};
+use actress::{
+    Actor, ActorContext, AsyncResponse, Handle, HttpMailbox, Mailbox, Message, SyncResponse, System,
+};
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -47,7 +49,6 @@ struct Bar(i64);
 impl Message for Bar {
     type Result = u64;
 }
-
 
 struct Webby;
 
@@ -81,7 +82,7 @@ impl Handle<Bar> for Webby {
         AsyncResponse::from_future(async move {
             match remote.ask_async(Foo(4)).await {
                 Ok(resp) => resp.x as u64,
-                Err(_) => 0
+                Err(_) => 0,
             }
         })
     }
@@ -139,7 +140,7 @@ fn main() {
         foo: Choice::A,
     });
     */
-    let web2 = system.start(Webby{});
+    let web2 = system.start(Webby {});
     system.spawn_future(async move {
         match web2.ask_async(Bar(12)).await {
             Ok(long) => println!("Got a long {}", long),
