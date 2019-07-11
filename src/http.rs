@@ -225,10 +225,13 @@ async fn serve_request(router: Mailbox<Router>, req: Request<Body>) -> Response<
                     .body(Body::from("No route"))
                     .unwrap(),
             },
-            Err(_) => Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Internal Server Error"))
-                .unwrap(),
+            Err(err) => {
+                eprintln!("Could not route msg: {:?}", err);
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Internal Server Error"))
+                    .unwrap()
+            },
         },
         Err(err) => Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -291,15 +294,21 @@ impl<M> HttpMailbox<M>
             match resp_fut.await {
                 Ok(resp) => {
                     let (parts, body) = resp.into_parts();
+                    // TODO; Check HTTP return code
                     match collect_body(&parts.headers, body).await {
-                        Ok(bytes) => {
-                            let as_result = serde_json::from_slice(&bytes).unwrap();
-                            Ok(as_result)
-                        },
+                        Ok(bytes) =>
+                            match serde_json::from_slice(&bytes) {
+                                Ok(result) => Ok(result),
+                                Err(decode_err) => {
+                                    let as_str = String::from_utf8_lossy(&bytes);
+                                    eprintln!("Decode err: {:?} str={}, bytes = {:?}", decode_err, as_str, bytes);
+                                    Err(MailboxAskError::CouldNotRecv)
+                                },
+                            },
                         Err(msg) => {
                             eprintln!("Recv err: {:?}", msg);
                             Err(MailboxAskError::CouldNotRecv)
-                        }
+                        },
                     }
                 },
                 Err(e) => {

@@ -83,10 +83,10 @@ impl SystemContext {
                 supervisor: SupervisorGuard::new(actor_id, sup),
                 listeners: listeners,
                 inner: ActorContext::new(mailbox.copy(), self.clone()),
+                actor_started: false,
             };
 
-            // TODO; Figure out a way to move this into the true-branch below
-            Actor::started(&mut bundle.actor);
+            Actor::starting(&mut bundle.actor);
             self.spawn_future(bundle);
             Ok(mailbox)
         }
@@ -100,15 +100,12 @@ impl SystemContext {
                 recv: Some(rx),
                 supervisor: SupervisorGuard::new(actor_id, sup),
                 inner: ActorContext::new(mailbox.copy(), self.clone()),
+                actor_started: false,
             };
 
-            // TODO; Figure out a way to move this into the true-branch below
-            Actor::started(&mut bundle.actor);
-
-            match self.spawn_future(bundle) {
-                true => Ok(mailbox),
-                false => Err(()),
-            }
+            Actor::starting(&mut bundle.actor);
+            self.spawn_future(bundle);
+            Ok(mailbox)
         }
     }
 }

@@ -20,7 +20,6 @@ use crate::mailbox::PeekGrab;
 use crate::mailbox::{Envelope, EnvelopeProxy, Mailbox};
 use crate::supervisor::SupervisorGuard;
 use crate::system_context::SystemContext;
-use std::time::Duration;
 
 type AnyArcMap = HashMap<TypeId, Arc<dyn Any + Send + Sync + 'static>>;
 
@@ -60,7 +59,8 @@ where
             };
         }));
         */
-        // TODO: this loop shouldn't have to be here?
+
+        self.start_actor_once();
         loop {
             if self.recv.is_none() {
                 panic!("Poll called after channel closed! This should never happen!");
@@ -77,7 +77,7 @@ where
                     match process_result {
                         Ok(()) => { /* all is well */ }
                         Err(_) => {
-                            // Do not call Actor::stopped here, because
+                            // Do not call Actor:: callbacks here, because
                             // the actor might be in a bad state
                             self.close_and_stop();
                             return Poll::Ready(());
@@ -85,7 +85,8 @@ where
                     }
 
                     if self.inner.is_stopping() {
-                        // Only blocks a finite amount of time, since the rx channel is closed.
+                        // This means your channel was closed. Do we want to allow for a way to resume?
+                        Actor::stopping(&mut self.actor);
                         let backlog = self.close_and_stop();
                         println!(
                             "Stopping actor {} with {} messages left in backlog",
@@ -105,7 +106,11 @@ where
                         break;
                     }
                 }
-                Poll::Ready(None) => break,
+                Poll::Ready(None) => {
+                    Actor::stopping(&mut self.actor);
+                    self.close_and_stop();
+                    break;
+                },
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -121,6 +126,7 @@ pub(crate) struct ActorBundle<A: Actor> {
     pub(crate) supervisor: SupervisorGuard<A>,
     #[cfg(feature = "actress_peek")]
     pub(crate) listeners: Arc<Mutex<AnyArcMap>>,
+    pub(crate) actor_started: bool,
 }
 
 // TODO; It's this or specifying that all Actors must be Send. I don't know which is better
@@ -144,12 +150,18 @@ where
         }
     }
 
+    #[inline]
+    fn start_actor_once(&mut self) {
+        if !self.actor_started {
+            self.actor_started = true;
+            Actor::started(&mut self.actor);
+        }
+    }
+
     fn close_and_stop(&mut self) -> Vec<Envelope<A>> {
         let mut rx = self.recv.take().unwrap();
         rx.close();
-        // This means your channel was closed. Do we want to allow for a way to resume?
-        Actor::stopping(&mut self.actor);
-
+        // Only blocks a finite amount of time, since the rx channel is closed.
         return block_on(rx.collect());
     }
 }
@@ -211,7 +223,8 @@ impl System {
 
     pub fn run_until_completion(mut self) {
         println!("Waiting for system to stop...");
-
+        //use crate::internal_handlers::StoppableActor;
+        //self.json_router.stop_me();
         // TODO; Couldn't I do this by just dropping these mailboxes?
         match self.context.registry.lock() {
             Ok(registry) => {
@@ -222,8 +235,6 @@ impl System {
             Err(_) => panic!("Could not terminate services..."),
         }
 
-        //self.thread_pool.shutdown_on_idle().wait();
-        std::thread::sleep(Duration::from_secs(5));
         block_on(self.tokio_runtime.shutdown_on_idle());
         println!("Done with system?");
     }
