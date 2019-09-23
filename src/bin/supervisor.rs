@@ -14,7 +14,7 @@ impl Actor for FibberSup {
 }
 
 struct FibberSup {
-    active_workers: HashSet<usize>,
+    active_workers: HashSet<u64>,
 }
 
 impl FibberSup {
@@ -34,7 +34,7 @@ impl Message for FibRequest {
 
 #[derive(Debug)]
 struct FibReply {
-    worker: usize,
+    worker: u64,
     result: u64,
 }
 
@@ -99,7 +99,7 @@ impl Handle<FibReply> for FibberSup {
 }
 
 impl Supervisor<FibberWorker> for FibberSup {
-    fn worker_stopped(&mut self, worker_id: usize, info: Option<PanicData>) {
+    fn worker_stopped(&mut self, worker_id: u64, info: Option<PanicData>) {
         println!("Oh no! Worker with id {} stopped! {:?}", worker_id, info);
 
         self.active_workers.remove(&worker_id);
