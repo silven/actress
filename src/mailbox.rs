@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::executor::block_on;
+use futures::SinkExt;
 use tokio_sync::{mpsc, oneshot};
 
 use crate::actor::{Actor, Handle, Message};

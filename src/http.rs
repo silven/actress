@@ -1,21 +1,21 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use hyper::service::{make_service_fn, service_fn};
+use headers::{Connection, ContentLength, HeaderMapExt, Upgrade};
 use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode, Uri};
+use hyper::client::ResponseFuture;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::upgrade::Upgraded;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-
-use crate::mailbox::MailboxAskError;
-use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
-use hyper::client::ResponseFuture;
-use std::marker::PhantomData;
-use hyper::upgrade::Upgraded;
-use headers::{HeaderMapExt, Connection, Upgrade, ContentLength};
-use tokio_sync::{oneshot};
+use tokio_sync::oneshot;
 use tokio_sync::oneshot::Sender;
+
+use crate::{Actor, ActorContext, AsyncResponse, Handle, Mailbox, Message};
+use crate::mailbox::MailboxAskError;
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
