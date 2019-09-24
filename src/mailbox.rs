@@ -320,4 +320,9 @@ where
             Err(_) => Err(MailboxAskError::CouldNotSend),
         };
     }
+
+    pub(crate) fn stop_recv(&mut self) {
+        println!("Forcefully closing mailbox to actor {}", self.actor_id);
+        futures::executor::block_on(self.tx.close()).unwrap();
+    }
 }

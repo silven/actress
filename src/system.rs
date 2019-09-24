@@ -28,7 +28,7 @@ pub struct System {
     //thread_pool: ThreadPool,
     context: SystemContext,
     //http_started: bool,
-    http_thread: Option<u8>,
+    http_thread: Option<tokio::sync::oneshot::Sender<()>>,
     json_router: Mailbox<Router>,
 }
 
@@ -115,6 +115,7 @@ where
             }
         }
         Actor::stopped(&mut self.actor);
+        self.inner.system.notify_stop(self.inner.id());
         return Poll::Ready(());
     }
 }
@@ -174,15 +175,22 @@ impl System {
         let spawner = rt.executor();
         //let spawner = pool.sender().clone();
         let mut context = SystemContext::new(spawner);
-        let router = context.spawn_actor(Router::new(), None);
+        let router = context.register("__router", Router::new());
 
-        System {
+        let sys = System {
             tokio_runtime: rt,
             //thread_pool: pool,
             context: context,
             http_thread: None,
-            json_router: router.unwrap(),
+            json_router: router,
+        };
+
+        #[cfg(feature = "signals")]
+        {
+            System::setup_signals(&sys);
         }
+
+        sys
     }
 
     // TODO, can I get rid of the A?, like, Mailbox: impl Accepts<M> or something?
@@ -195,8 +203,9 @@ impl System {
         self.json_router
             .send(Serve(path.to_owned(), Box::new(mailbox)));
         if self.http_thread.is_none() {
-            self.http_thread = Some(1);
-            self.spawn_future(crate::http::serve_it(self.json_router.copy()))
+            let (sender, fut) = crate::http::serve_it(self.json_router.copy());
+            self.http_thread = Some(sender);
+            self.spawn_future(fut);
         }
     }
 
@@ -224,7 +233,9 @@ impl System {
     pub fn run_until_completion(mut self) {
         println!("Waiting for system to stop...");
         //use crate::internal_handlers::StoppableActor;
-        //self.json_router.stop_me();
+        if let Some(tx) = self.http_thread.take() {
+            tx.send(()).unwrap();
+        }
         // TODO; Couldn't I do this by just dropping these mailboxes?
         match self.context.registry.lock() {
             Ok(registry) => {
@@ -235,11 +246,33 @@ impl System {
             Err(_) => panic!("Could not terminate services..."),
         }
 
-        block_on(self.tokio_runtime.shutdown_on_idle());
+        self.tokio_runtime.shutdown_on_idle();
         println!("Done with system?");
     }
 
-    pub fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) {
+    pub fn spawn_future<F: Future<Output = ()> + Send + 'static>(&mut self, fut: F) {
         self.context.spawn_future(fut);
+    }
+
+    #[cfg(feature = "signals")]
+    fn setup_signals(&self) {
+        let ctx = self.context.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            ctx.dump();
+        });
+
+        // TODO: Implement when signal-hook works again.
+        /*
+        use signal_hook::iterator::Signals;
+        let signals = Signals::new(&[signal_hook::SIGINT]);
+        std::thread::spawn(move || {
+            for signal in signals.forever() {
+                match signal {
+                    signal_hook::SIGINT => {}
+                }
+            }
+        });
+        */
     }
 }

@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use std::time::Duration;
 
 use actress::{Actor, ActorContext, Handle, Message, SyncResponse, System};
@@ -67,6 +65,5 @@ fn main() {
         println!("The result was: {:?}", x);
     });
 
-    std::thread::sleep(Duration::from_secs(1));
     system.run_until_completion();
 }

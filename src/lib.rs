@@ -1,4 +1,4 @@
-#![feature(async_await, arbitrary_self_types, specialization)]
+#![feature(core_intrinsics, arbitrary_self_types, specialization)]
 #![deny(unused_imports)]
 
 mod actor;

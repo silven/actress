@@ -19,6 +19,7 @@ pub(crate) struct SystemContext {
     //pub(crate) spawner: Sender,
     pub(crate) registry: Arc<Mutex<HashMap<String, Box<dyn StoppableActor>>>>,
     id_counter: Arc<AtomicU64>,
+    live_actors: Arc<Mutex<HashMap<u64, String>>>,
 }
 
 impl SystemContext {
@@ -28,6 +29,15 @@ impl SystemContext {
             spawner: spawner,
             registry: Arc::new(Mutex::new(HashMap::new())),
             id_counter: Arc::new(AtomicU64::new(0)),
+            live_actors: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub(crate) fn dump(&self) {
+        if let Ok(live_data) = self.live_actors.lock() {
+            for (k, v) in live_data.iter() {
+                println!("Actor {} of type {} is still alive", k, v);
+            }
         }
     }
 
@@ -57,8 +67,14 @@ impl SystemContext {
         None
     }
 
-    pub(crate) fn spawn_future<F: Future<Output = ()> + Send + 'static>(&self, fut: F) {
-        self.spawner.spawn(fut) // TODO; Better way of handling spawn errors? (panic?)
+    pub(crate) fn spawn_future<F: Future<Output = ()> + Send + 'static>(&mut self, fut: F) {
+        self.spawner.spawn(fut); // TODO; Handle spawn errors
+    }
+
+    pub(crate) fn notify_stop(&self, actor_id: u64) {
+        if let Ok(mut live_data) = self.live_actors.lock() {
+            live_data.remove(&actor_id);
+        }
     }
 
     pub(crate) fn spawn_actor<A>(
@@ -71,6 +87,15 @@ impl SystemContext {
     {
         let (tx, rx) = mpsc::unbounded_channel();
         let actor_id = self.id_counter.fetch_add(1, AcqRel);
+        let actor_name = unsafe { std::intrinsics::type_name::<A>() }.to_owned();
+        println!(
+            "Spawning actor of type '{}' with id '{}'",
+            actor_name, actor_id
+        );
+
+        if let Ok(mut live_data) = self.live_actors.lock() {
+            live_data.insert(actor_id, actor_name);
+        }
 
         #[cfg(feature = "actress_peek")]
         {

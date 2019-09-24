@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use actress::{Actor, ActorContext, AsyncResponse, Handle, Message, System};
 
 struct Fibber {
@@ -40,13 +38,14 @@ impl Handle<FibRequest> for Fibber {
     }
 }
 
+
 fn main() {
     let mut system = System::new();
     let act = system.start(Fibber::new());
 
     // We have to move the act-mailbox somewhere or the program won't terminate.
     system.spawn_future(async move {
-        for x in 1..=30 {
+        for x in 1..=18 {
             match act.ask(FibRequest(x)) {
                 Ok(fib) => println!("The fib({}) = {}", x, fib),
                 Err(e) => println!("Could not ask: {:?}", e),

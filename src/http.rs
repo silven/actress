@@ -14,6 +14,8 @@ use hyper::client::ResponseFuture;
 use std::marker::PhantomData;
 use hyper::upgrade::Upgraded;
 use headers::{HeaderMapExt, Connection, Upgrade, ContentLength};
+use tokio_sync::{oneshot};
+use tokio_sync::oneshot::Sender;
 
 type PBF<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -168,8 +170,9 @@ where
 
 // Start hyper thread
 
-pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
-    async move {
+pub(crate) fn serve_it(router: Mailbox<Router>) -> (Sender<()>, impl Future<Output=()>) {
+    let (tx, rx) = oneshot::channel();
+    let hyper_fut = async move {
         let addr = "127.0.0.1:12345".parse().unwrap();
 
         let mk_service = make_service_fn(move |_| {
@@ -180,6 +183,8 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
                     async move {
                         if req.headers().typed_get::<Upgrade>().is_some() {
                             println!("upgrade request: {:?}", req);
+                            println!("hej, detta är en request. Kan jag göra websockets än? Jag vet inte.");
+
                             use headers::{SecWebsocketKey, SecWebsocketAccept};
 
                             let key = req.headers().typed_get::<SecWebsocketKey>().unwrap();
@@ -198,7 +203,7 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
 
                                         let mut u: Upgraded = upgraded;
                                         //let mut buff = Vec::with_capacity(512);
-                                        let msg = "HEEELEOOO";
+                                        let msg = "HEEELLOOO";
                                         //poll_fn(|cx| <Upgraded as AsyncRead>::poll_read(Pin::new(&mut u), cx, &mut buff)).await;
                                         let bs = poll_fn(|cx| <Upgraded as AsyncWrite>::poll_write(Pin::new(&mut u), cx, msg.as_bytes())).await;
                                         println!("Wrote some by bytes: {:?}", bs);
@@ -225,8 +230,13 @@ pub(crate) fn serve_it(router: Mailbox<Router>) -> impl Future<Output = ()> {
                 }))
             }
         });
-        Server::bind(&addr).serve(mk_service).await;
-    }
+        Server::bind(&addr)
+            .serve(mk_service)
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            }).await;
+    };
+    (tx, hyper_fut)
 }
 
 async fn serve_request(router: Mailbox<Router>, req: Request<Body>) -> Response<Body> {
@@ -275,7 +285,7 @@ where
     M: Message + Serialize,
     M::Result: DeserializeOwned,
 {
-    _phantom: PhantomData<*const M>,
+    _phantom: PhantomData<M>, // This (logically) should be *const M, but that doesn't fly...
     uri: Uri,
     client: hyper::Client<hyper::client::HttpConnector>,
 }
@@ -307,7 +317,7 @@ where
         let as_json = serde_json::to_string(&msg).unwrap();
         let body = hyper::Body::from(as_json);
         let resp_fut: ResponseFuture = self.client.request(
-            Request::post(self.uri.clone())
+            Request::post(&self.uri)
                 .body(body)
                 .expect("request builder"),
         );

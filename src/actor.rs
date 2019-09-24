@@ -32,6 +32,7 @@ pub trait Actor: Sized + 'static {
     fn stopped(&mut self) {}
 
     fn supervisor_stopped(&mut self, cx: &mut ActorContext<Self>) {
+        // Does it make sense to allow the Actor to do anything else when it's supervisor stops?
         cx.stop();
     }
 
@@ -124,6 +125,7 @@ where
     }
 
     pub fn stop(&mut self) {
-        self.state = ActorState::Stopping
+        self.state = ActorState::Stopping;
+        self.mailbox.stop_recv();
     }
 }

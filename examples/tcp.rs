@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::error::Error;
@@ -77,7 +75,7 @@ impl Handle<Bar> for Webby {
 
     fn accept(&mut self, msg: Bar, cx: &mut ActorContext<Self>) -> Self::Response {
         println!("Inside Handle<Bar>");
-        let remote = HttpMailbox::<Foo>::new_at("http://localhost:12345/foo").unwrap();
+        let remote: HttpMailbox<Foo> = HttpMailbox::<Foo>::new_at("http://localhost:12345/foo").unwrap();
 
         AsyncResponse::from_future(async move {
             match remote.ask_async(Foo(4)).await {
@@ -126,12 +124,12 @@ impl Handle<FibRequest> for Fibber {
     }
 }
 
+
 fn main() {
     let mut system = System::new();
 
     let mb = system.start(Webby {});
     system.serve::<Foo, _>("/foo", mb);
-    std::thread::sleep(Duration::from_secs(1));
     /*
     mb.grab::<Foo, _>(|foo| Resp {
         x: 0,
@@ -157,5 +155,6 @@ fn main() {
         };
     });
     */
+    std::thread::sleep(Duration::from_secs(5));
     system.run_until_completion();
 }

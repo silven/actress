@@ -120,7 +120,7 @@ where
     A: Actor,
 {
     fn drop(&mut self) {
-        println!("Dropping supervisor guard");
+        println!("Dropping supervisor guard {}", self.id);
         if let Some(sup) = self.inner.swap(None) {
             println!("Notifying supvervisor that worker stopped");
             sup.notify_worker_stopped(self.id, None);
